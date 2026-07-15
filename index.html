@@ -4,53 +4,45 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#0b0f17">
-  <title>Arena Maker V6 — Montador de Campeonatos</title>
+  <title>Arena Maker V8 — Montador de Campeonatos</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="assets/styles.css">
 </head>
 <body>
-  <div class="app-shell">
-    <aside class="sidebar">
-      <div class="brand">
-        <div class="brand-symbol">A</div>
-        <div class="brand-copy">
-          <strong>Arena Maker</strong>
-          <span>Gerenciador de campeonatos</span>
-        </div>
-      </div>
-
-      <nav class="nav" aria-label="Navegação principal">
-        <button class="nav-item active" data-view="tournaments">
-          <span class="nav-icon">▦</span>
-          <span>Campeonatos</span>
+  <div class="app-shell app-shell-wide">
+    <main class="main main-wide">
+      <header class="topbar topbar-compact">
+        <button class="top-brand" id="homeBtn" type="button" aria-label="Ir para campeonatos">
+          <span class="brand-symbol">A</span>
+          <span class="brand-copy"><strong>Arena Maker</strong><small>Montador de campeonatos</small></span>
         </button>
-        <button class="nav-item" data-view="importer">
-          <span class="nav-icon">⇧</span>
-          <span>Publicar atualização</span>
-        </button>
-      </nav>
 
-      <div class="sidebar-foot">
-        <div id="syncStatus" class="sync-status">
-          <span class="sync-dot"></span>
-          <div><strong>Carregando</strong><span>Verificando banco</span></div>
+        <div class="championship-switcher-wrap">
+          <label for="tournamentSwitcher">CAMPEONATO ATUAL</label>
+          <select id="tournamentSwitcher" aria-label="Selecionar campeonato">
+            <option value="">Todos os campeonatos</option>
+          </select>
         </div>
-      </div>
-    </aside>
 
-    <main class="main">
-      <header class="topbar">
+        <div class="top-actions">
+          <div id="syncStatus" class="sync-status compact">
+            <span class="sync-dot"></span>
+            <div><strong>Carregando</strong><span>Verificando banco</span></div>
+          </div>
+          <button id="publishUpdateBtn" class="button ghost compact-action" type="button">Publicar atualização</button>
+          <button id="newTournamentBtn" class="button primary">+ Novo campeonato</button>
+        </div>
+      </header>
+
+      <div class="view-heading" id="viewHeading">
         <div>
           <div class="eyebrow" id="viewEyebrow">COMPETIÇÕES</div>
           <h1 id="viewTitle">Campeonatos</h1>
           <p id="viewSubtitle">Crie formatos livres, sorteie confrontos e registre os resultados.</p>
         </div>
-        <div class="top-actions">
-          <button id="newTournamentBtn" class="button primary">+ Novo campeonato</button>
-        </div>
-      </header>
+      </div>
 
       <section id="view-tournaments" class="view active"></section>
       <section id="view-importer" class="view"></section>

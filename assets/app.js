@@ -78,7 +78,9 @@ const state = {
   activeTournamentId: null,
   detailTab: 'matches',
   wizard: null,
-  zipPayload: null
+  zipPayload: null,
+  assetSearchCache: new Map(),
+  assetSearchTimers: {}
 };
 
 const formatLabel = (format) => ({ league: 'Liga', knockout: 'Mata-mata', mixed: 'Liga + mata-mata' }[format] || format);
@@ -139,7 +141,21 @@ async function init() {
 
 function bindStaticEvents() {
   $('#newTournamentBtn').addEventListener('click', openTournamentWizard);
-  $$('.nav-item').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.view)));
+  $('#homeBtn').addEventListener('click', () => navigate('tournaments'));
+  $('#publishUpdateBtn').addEventListener('click', () => navigate('importer'));
+  window.addEventListener('resize', () => {
+    if (state.detailTab === 'bracket') requestAnimationFrame(drawBracketConnectors);
+  });
+
+  $('#tournamentSwitcher').addEventListener('change', () => {
+    const tournamentId = $('#tournamentSwitcher').value;
+    state.view = 'tournaments';
+    state.activeTournamentId = tournamentId || null;
+    const opened = tournamentById(tournamentId);
+    state.detailTab = opened?.format === 'knockout' ? 'bracket' : 'standings';
+    $$('.view').forEach((section) => section.classList.toggle('active', section.id === 'view-tournaments'));
+    renderCurrentView();
+  });
 }
 
 function setSyncStatus(online) {
@@ -156,7 +172,7 @@ function loadLocalData() {
 function normalizeTournament(raw) {
   if (!raw || typeof raw !== 'object') return raw;
   const tournament = clone(raw);
-  tournament.version = tournament.version || 6;
+  tournament.version = Math.max(Number(tournament.version || 0), 8);
   tournament.gameProfile = tournament.gameProfile || detectGameProfile(tournament.game);
   const profile = getGameProfile(tournament.gameProfile);
   tournament.game = profile.label;
@@ -185,6 +201,8 @@ function normalizeTournament(raw) {
       awayLineup: match.awayLineup || participantById({ participants: tournament.participants }, match.awayId)?.players.map((player) => player.id) || [],
       homeChoice: match.homeChoice || '',
       awayChoice: match.awayChoice || '',
+      homeChoiceImage: match.homeChoiceImage || match.gameData?.homeChoiceImage || '',
+      awayChoiceImage: match.awayChoiceImage || match.gameData?.awayChoiceImage || '',
       homeDeaths: Number(match.homeDeaths ?? match.gameData?.homeDeaths ?? 0),
       awayDeaths: Number(match.awayDeaths ?? match.gameData?.awayDeaths ?? 0),
       homeAssists: Number(match.homeAssists ?? match.gameData?.homeAssists ?? 0),
@@ -265,7 +283,6 @@ async function removeTournament(id) {
 function navigate(view) {
   state.view = view;
   state.activeTournamentId = null;
-  $$('.nav-item').forEach((button) => button.classList.toggle('active', button.dataset.view === view));
   $$('.view').forEach((section) => section.classList.toggle('active', section.id === `view-${view}`));
   const isTournament = view === 'tournaments';
   $('#viewEyebrow').textContent = isTournament ? 'COMPETIÇÕES' : 'MANUTENÇÃO';
@@ -277,7 +294,24 @@ function navigate(view) {
   renderCurrentView();
 }
 
+function renderTournamentSwitcher() {
+  const select = $('#tournamentSwitcher');
+  if (!select) return;
+  const tournaments = [...state.tournaments].sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+  select.innerHTML = `<option value="">Todos os campeonatos</option>${tournaments.map((tournament) => `<option value="${tournament.id}">${escapeHtml(getGameProfile(tournament).short)} · ${escapeHtml(tournament.name)}</option>`).join('')}`;
+  select.value = state.activeTournamentId || '';
+}
+
+function updateTopLayout() {
+  const inDetail = state.view === 'tournaments' && Boolean(state.activeTournamentId);
+  $('#viewHeading')?.classList.toggle('hidden', inDetail);
+  $('#publishUpdateBtn')?.classList.toggle('active', state.view === 'importer');
+  $('#newTournamentBtn')?.classList.toggle('hidden', state.view !== 'tournaments');
+  renderTournamentSwitcher();
+}
+
 function renderCurrentView() {
+  updateTopLayout();
   if (state.view === 'tournaments') renderTournamentsView();
   if (state.view === 'importer') renderImporter();
 }
@@ -331,7 +365,7 @@ function renderTournamentsView() {
     state.activeTournamentId = button.dataset.openTournament;
     const opened = tournamentById(state.activeTournamentId);
     state.detailTab = opened?.format === 'knockout' ? 'bracket' : 'standings';
-    renderTournamentsView();
+    renderCurrentView();
   }));
   $$('[data-create-tournament]').forEach((button) => button.addEventListener('click', openTournamentWizard));
 }
@@ -1103,7 +1137,7 @@ function renderTournamentDetail() {
     </div>
     </div>`;
 
-  $('[data-back-list]').addEventListener('click', () => { state.activeTournamentId = null; renderTournamentsView(); });
+  $('[data-back-list]').addEventListener('click', () => { state.activeTournamentId = null; renderCurrentView(); });
   $$('[data-detail-tab]').forEach((button) => button.addEventListener('click', () => { state.detailTab = button.dataset.detailTab; renderTournamentDetail(); }));
   $$('[data-edit-match]').forEach((button) => button.addEventListener('click', () => openMatchModal(tournament.id, button.dataset.editMatch)));
   $('[data-generate-knockout]')?.addEventListener('click', async () => {
@@ -1125,6 +1159,8 @@ function renderTournamentDetail() {
     try { await removeTournament(tournament.id); toast('Campeonato excluído.', 'success'); }
     catch (error) { toast(error.message, 'error'); }
   });
+
+  if (state.detailTab === 'bracket') requestAnimationFrame(drawBracketConnectors);
 }
 
 function detailTabButton(tab, label) {
@@ -1159,17 +1195,23 @@ function groupMatchesForDisplay(matches) {
   return [...map.values()].sort((a,b) => a.key.localeCompare(b.key, undefined, { numeric: true }));
 }
 
+
+function choiceIdentityHtml(name = '', image = '', compact = false) {
+  if (!name) return '';
+  return `<span class="choice-identity ${compact ? 'compact' : ''}">${image ? `<img src="${escapeHtml(image)}" alt="">` : '<b>•</b>'}<span>${escapeHtml(name)}</span></span>`;
+}
+
 function matchRowHtml(tournament, match, index) {
   const home = participantName(tournament, match.homeId);
   const away = participantName(tournament, match.awayId);
   const profile = getGameProfile(tournament);
   return `<div class="match-row ${match.played ? 'played' : ''} ${match.isBye ? 'bye' : ''}">
     <div class="match-code">J${String(index + 1).padStart(2,'0')}</div>
-    <div class="match-side"><strong>${escapeHtml(home)}</strong>${match.homeChoice ? `<small>${escapeHtml(match.homeChoice)}</small>` : ''}</div>
+    <div class="match-side"><strong>${escapeHtml(home)}</strong>${match.homeChoice ? choiceIdentityHtml(match.homeChoice, match.homeChoiceImage, true) : ''}</div>
     <div class="match-score"><span>${match.played ? match.homeScore : '—'}</span><small>${profile.scoreShort}</small></div>
     <div class="match-vs">×</div>
     <div class="match-score"><span>${match.played ? match.awayScore : '—'}</span><small>${profile.scoreShort}</small></div>
-    <div class="match-side away"><strong>${escapeHtml(away)}</strong>${match.awayChoice ? `<small>${escapeHtml(match.awayChoice)}</small>` : ''}</div>
+    <div class="match-side away"><strong>${escapeHtml(away)}</strong>${match.awayChoice ? choiceIdentityHtml(match.awayChoice, match.awayChoiceImage, true) : ''}</div>
     <div class="match-status"><button class="button small ${match.played ? 'secondary' : 'primary'}" data-edit-match="${match.id}">${match.played ? 'Editar' : 'Registrar'}</button></div>
   </div>`;
 }
@@ -1181,34 +1223,391 @@ function standingsTabHtml(tournament) {
   return `<div class="panel standings-panel ${gameProfileClass(tournament)}"><div class="panel-head standings-title"><div><span class="panel-kicker">TABELA DA COMPETIÇÃO</span><h3>Classificação</h3><p>${tournament.format === 'mixed' ? `Os ${qualifiers} primeiros avançam ao mata-mata.` : 'Tabela completa da liga.'}</p></div><div class="legend"><span class="legend-qualified"></span> Zona de classificação</div></div><div class="table-wrap"><table class="stats-table standings-table"><thead><tr><th>#</th><th>Participante</th><th class="num">J</th><th class="num">V</th><th class="num">E</th><th class="num">D</th><th class="num">${profile.scoreShort}+</th><th class="num">${profile.scoreShort}-</th><th class="num">SALDO</th><th class="num">PTS</th></tr></thead><tbody>${rows.map((row,index) => `<tr class="${qualifiers && index < qualifiers ? 'qualified' : ''} ${qualifiers && index === qualifiers - 1 ? 'cut-line' : ''}"><td class="rank"><span>${index + 1}</span></td><td><strong>${escapeHtml(participantName(tournament,row.id))}</strong></td><td class="num">${row.pj}</td><td class="num win-cell">${row.v}</td><td class="num">${row.e}</td><td class="num loss-cell">${row.d}</td><td class="num">${row.gp}</td><td class="num">${row.gc}</td><td class="num">${row.sg}</td><td class="num points-cell"><strong>${row.pts}</strong></td></tr>`).join('')}</tbody></table></div></div>`;
 }
 
-function bracketTabHtml(tournament) {
-  if (!tournament.knockoutState.started) {
-    const pairingLabel = tournament.settings.knockoutPairing === 'seeded' ? 'melhor contra pior' : 'sorteio livre';
-    return `<div class="panel empty-state"><div class="empty-state-inner"><div class="empty-symbol">◇</div><h2>Mata-mata ainda não gerado</h2><p>Finalize a liga. Depois, os ${tournament.settings.qualifiers} primeiros entrarão na chave por ${pairingLabel}.</p>${allLeagueMatchesPlayed(tournament) ? '<button class="button primary" data-generate-knockout>Gerar mata-mata</button>' : ''}</div></div>`;
+
+function standardSeedOrder(size) {
+  if (size <= 2) return [1, 2].slice(0, size);
+  let order = [1, 2];
+  for (let current = 2; current < size; current *= 2) {
+    const nextSize = current * 2;
+    order = order.flatMap((seed) => [seed, nextSize + 1 - seed]);
   }
-  const rounds = [...new Set(knockoutMatches(tournament).map((match) => match.bracketRound))].sort((a,b) => a-b);
-  const initialByes = tournament.knockoutState.initialByes || [];
-  const pairingLabel = tournament.knockoutState.pairing === 'seeded' ? 'Melhor contra pior' : 'Sorteio livre';
-  return `<div class="stack">
-    <div class="bracket-summary">
-      <div><span>MÉTODO DA CHAVE</span><strong>${pairingLabel}</strong></div>
-      <div><span>CLASSIFICADOS</span><strong>${tournament.format === 'mixed' ? tournament.settings.qualifiers : tournament.participants.length}</strong></div>
-      <div><span>FOLGAS INICIAIS</span><strong>${initialByes.length}</strong></div>
-    </div>
-    ${initialByes.length ? `<div class="bye-strip"><div><strong>Folgas da rodada preliminar</strong><span>Estes participantes já estão garantidos na fase seguinte.</span></div><div class="bye-list">${initialByes.map((id) => `<span class="bye-chip">${escapeHtml(participantName(tournament,id))}<b>FOLGA</b></span>`).join('')}</div></div>` : ''}
-    <div class="bracket">${rounds.map((round) => {
-      const matches = knockoutMatches(tournament).filter((match) => match.bracketRound === round);
-      return `<div class="bracket-column"><div class="bracket-round-title"><span>FASE ${String(round).padStart(2,'0')}</span><h4>${escapeHtml(matches[0]?.roundName || `Rodada ${round}`)}</h4></div>${matches.map((match) => bracketMatchHtml(tournament,match)).join('')}</div>`;
-    }).join('')}${tournament.matches.some((match) => match.stage === 'third') ? `<div class="bracket-column"><div class="bracket-round-title"><span>EXTRA</span><h4>3º lugar</h4></div>${tournament.matches.filter((match) => match.stage === 'third').map((match) => bracketMatchHtml(tournament,match)).join('')}</div>` : ''}</div>
+  return order;
+}
+
+function bracketSlotParticipant(tournament, id, fallback = 'A definir', image = '') {
+  return {
+    kind: 'participant',
+    id: id || '',
+    label: id ? participantName(tournament, id) : fallback,
+    image: image || ''
+  };
+}
+
+function bracketSlotSeed(seed) {
+  return { kind: 'seed', seed, label: `${seed}º classificado` };
+}
+
+function bracketSlotDraw(index) {
+  return { kind: 'draw', label: `Sorteado ${index}` };
+}
+
+function bracketSlotSource(sourceKey, outcome = 'winner') {
+  return { kind: 'source', sourceKey, outcome };
+}
+
+function createBracketDisplayNode(tournament, round, index, title, intendedHome, intendedAway, actualMatch = null) {
+  const key = actualMatch ? `match-${actualMatch.id}` : `virtual-${round}-${index}`;
+  const home = actualMatch?.homeId
+    ? bracketSlotParticipant(tournament, actualMatch.homeId, intendedHome?.label, actualMatch.homeChoiceImage)
+    : intendedHome;
+  const away = actualMatch?.awayId
+    ? bracketSlotParticipant(tournament, actualMatch.awayId, intendedAway?.label, actualMatch.awayChoiceImage)
+    : intendedAway;
+  return {
+    key,
+    round,
+    index,
+    title,
+    actualMatch,
+    home,
+    away,
+    sources: [intendedHome, intendedAway]
+      .filter((slot) => slot?.kind === 'source')
+      .map((slot) => slot.sourceKey)
+  };
+}
+
+function bracketDisplayModel(tournament) {
+  const total = tournament.format === 'mixed'
+    ? Number(tournament.settings.qualifiers || 0)
+    : tournament.participants.length;
+  const plan = getBracketPlan(total);
+  const started = Boolean(tournament.knockoutState?.started);
+  const pairing = tournament.knockoutState?.pairing || tournament.settings.knockoutPairing || 'draw';
+  const seeded = pairing === 'seeded';
+  const actualByRound = new Map();
+  for (const match of knockoutMatches(tournament)) {
+    const round = Number(match.bracketRound || 1);
+    if (!actualByRound.has(round)) actualByRound.set(round, []);
+    actualByRound.get(round).push(match);
+  }
+  for (const matches of actualByRound.values()) {
+    matches.sort((a, b) => Number(a.round || 0) - Number(b.round || 0) || String(a.id).localeCompare(String(b.id)));
+  }
+
+  const columns = [];
+  let currentRound = 1;
+  let previousNodes = [];
+
+  if (plan.preliminaryMatches > 0) {
+    const actualFirst = actualByRound.get(1) || [];
+    const preliminaryNodes = [];
+
+    if (started && actualFirst.length) {
+      for (let index = 0; index < plan.preliminaryMatches; index += 1) {
+        const match = actualFirst[index] || null;
+        preliminaryNodes.push(createBracketDisplayNode(
+          tournament,
+          1,
+          index,
+          'Rodada preliminar',
+          match ? bracketSlotParticipant(tournament, match.homeId) : { kind: 'placeholder', label: 'Participante a definir' },
+          match ? bracketSlotParticipant(tournament, match.awayId) : { kind: 'placeholder', label: 'Participante a definir' },
+          match
+        ));
+      }
+    } else if (seeded) {
+      for (let index = 0; index < plan.preliminaryMatches; index += 1) {
+        const upperSeed = plan.byes + 1 + index;
+        const lowerSeed = total - index;
+        preliminaryNodes.push(createBracketDisplayNode(
+          tournament,
+          1,
+          index,
+          'Rodada preliminar',
+          bracketSlotSeed(upperSeed),
+          bracketSlotSeed(lowerSeed),
+          null
+        ));
+      }
+    } else {
+      for (let index = 0; index < plan.preliminaryMatches; index += 1) {
+        preliminaryNodes.push(createBracketDisplayNode(
+          tournament,
+          1,
+          index,
+          'Rodada preliminar',
+          bracketSlotDraw(index * 2 + 1),
+          bracketSlotDraw(index * 2 + 2),
+          null
+        ));
+      }
+    }
+
+    columns.push({ round: 1, title: 'Rodada preliminar', nodes: preliminaryNodes });
+    previousNodes = preliminaryNodes;
+    currentRound = 2;
+
+    let nextSlots = [];
+    if (seeded) {
+      const byeIds = started ? (tournament.knockoutState.initialByes || []) : [];
+      const virtualSeeds = new Map();
+      for (let seed = 1; seed <= plan.nextRoundSize; seed += 1) {
+        if (seed <= plan.byes) {
+          virtualSeeds.set(seed, started
+            ? bracketSlotParticipant(tournament, byeIds[seed - 1], `${seed}º classificado`)
+            : bracketSlotSeed(seed));
+        } else {
+          const source = preliminaryNodes[seed - plan.byes - 1];
+          virtualSeeds.set(seed, bracketSlotSource(source.key));
+        }
+      }
+      nextSlots = standardSeedOrder(plan.nextRoundSize).map((seed) => virtualSeeds.get(seed));
+    } else {
+      const byeIds = started ? (tournament.knockoutState.initialByes || []) : [];
+      const byeSlots = Array.from({ length: plan.byes }, (_, index) => started
+        ? bracketSlotParticipant(tournament, byeIds[index], 'Folga sorteada')
+        : { kind: 'placeholder', label: 'Folga sorteada' });
+      const winnerSlots = preliminaryNodes.map((node) => bracketSlotSource(node.key));
+      const interleaved = [];
+      for (const bye of byeSlots) {
+        interleaved.push(bye);
+        if (winnerSlots.length) interleaved.push(winnerSlots.shift());
+      }
+      interleaved.push(...winnerSlots);
+      nextSlots = interleaved;
+    }
+
+    const actualNext = actualByRound.get(currentRound) || [];
+    const nextNodes = [];
+    for (let index = 0; index < plan.nextRoundSize / 2; index += 1) {
+      nextNodes.push(createBracketDisplayNode(
+        tournament,
+        currentRound,
+        index,
+        knockoutRoundName(plan.nextRoundSize),
+        nextSlots[index * 2],
+        nextSlots[index * 2 + 1],
+        actualNext[index] || null
+      ));
+    }
+    columns.push({ round: currentRound, title: knockoutRoundName(plan.nextRoundSize), nodes: nextNodes });
+    previousNodes = nextNodes;
+    currentRound += 1;
+  } else {
+    const slots = [];
+    if (started) {
+      const firstActual = actualByRound.get(1) || [];
+      for (const match of firstActual) {
+        slots.push(bracketSlotParticipant(tournament, match.homeId));
+        slots.push(bracketSlotParticipant(tournament, match.awayId));
+      }
+    } else if (seeded) {
+      standardSeedOrder(total).forEach((seed) => slots.push(bracketSlotSeed(seed)));
+    } else {
+      for (let index = 1; index <= total; index += 1) slots.push(bracketSlotDraw(index));
+    }
+
+    const actualFirst = actualByRound.get(1) || [];
+    const firstNodes = [];
+    for (let index = 0; index < total / 2; index += 1) {
+      const actual = actualFirst[index] || null;
+      firstNodes.push(createBracketDisplayNode(
+        tournament,
+        1,
+        index,
+        knockoutRoundName(total),
+        actual?.homeId ? bracketSlotParticipant(tournament, actual.homeId, '', actual.homeChoiceImage) : slots[index * 2],
+        actual?.awayId ? bracketSlotParticipant(tournament, actual.awayId, '', actual.awayChoiceImage) : slots[index * 2 + 1],
+        actual
+      ));
+    }
+    columns.push({ round: 1, title: knockoutRoundName(total), nodes: firstNodes });
+    previousNodes = firstNodes;
+    currentRound = 2;
+  }
+
+  while (previousNodes.length > 1) {
+    const actualRound = actualByRound.get(currentRound) || [];
+    const nodes = [];
+    for (let index = 0; index < previousNodes.length / 2; index += 1) {
+      nodes.push(createBracketDisplayNode(
+        tournament,
+        currentRound,
+        index,
+        knockoutRoundName(previousNodes.length),
+        bracketSlotSource(previousNodes[index * 2].key),
+        bracketSlotSource(previousNodes[index * 2 + 1].key),
+        actualRound[index] || null
+      ));
+    }
+    columns.push({ round: currentRound, title: knockoutRoundName(previousNodes.length), nodes });
+    previousNodes = nodes;
+    currentRound += 1;
+  }
+
+  let gameNumber = 1;
+  const nodeMap = new Map();
+  for (const column of columns) {
+    for (const node of column.nodes) {
+      node.gameNumber = gameNumber;
+      nodeMap.set(node.key, node);
+      gameNumber += 1;
+    }
+  }
+
+  const semifinalColumn = [...columns].reverse().find((column) => column.nodes.length === 2);
+  const thirdActual = tournament.matches.find((match) => match.stage === 'third') || null;
+  let thirdPlace = null;
+  if (tournament.settings.thirdPlace && semifinalColumn) {
+    thirdPlace = createBracketDisplayNode(
+      tournament,
+      99,
+      0,
+      'Disputa de 3º lugar',
+      bracketSlotSource(semifinalColumn.nodes[0].key, 'loser'),
+      bracketSlotSource(semifinalColumn.nodes[1].key, 'loser'),
+      thirdActual
+    );
+    thirdPlace.gameNumber = gameNumber;
+    nodeMap.set(thirdPlace.key, thirdPlace);
+  }
+
+  return { total, plan, pairing, seeded, started, columns, nodeMap, thirdPlace };
+}
+
+function bracketSlotLabel(slot, model) {
+  if (!slot) return 'A definir';
+  if (slot.kind === 'source') {
+    const source = model.nodeMap.get(slot.sourceKey);
+    const prefix = slot.outcome === 'loser' ? 'Perdedor' : 'Vencedor';
+    return source ? `${prefix} do Jogo ${String(source.gameNumber).padStart(2, '0')}` : `${prefix} a definir`;
+  }
+  return slot.label || 'A definir';
+}
+
+function bracketSlotImage(slot) {
+  return slot?.kind === 'participant' ? slot.image || '' : '';
+}
+
+function bracketInitials(label = '') {
+  return String(label)
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join('')
+    .toUpperCase() || '?';
+}
+
+function bracketSlotHtml(slot, model, score, winner, choice, choiceImage) {
+  const label = bracketSlotLabel(slot, model);
+  const image = choiceImage || bracketSlotImage(slot);
+  return `<div class="bracket-team ${winner ? 'winner' : ''}">
+    <span class="bracket-team-media">${image ? `<img src="${escapeHtml(image)}" alt="">` : `<b>${escapeHtml(bracketInitials(label))}</b>`}</span>
+    <span class="bracket-team-copy"><strong>${escapeHtml(label)}</strong>${choice ? `<small>${escapeHtml(choice)}</small>` : `<small>${slot?.kind === 'source' ? 'Aguardando resultado anterior' : '&nbsp;'}</small>`}</span>
+    <span class="bracket-team-score">${score ?? '—'}</span>
   </div>`;
 }
-function bracketMatchHtml(tournament, match) {
-  const winner = matchWinner(match);
-  const profile = getGameProfile(tournament);
-  return `<button class="bracket-match" data-edit-match="${match.id}">
-    <div class="bracket-side ${winner === match.homeId ? 'winner' : ''}"><span><b>${escapeHtml(participantName(tournament,match.homeId))}</b>${match.homeChoice ? `<small>${escapeHtml(match.homeChoice)}</small>` : ''}</span><span>${match.played ? match.homeScore : '—'}<small>${profile.scoreShort}</small></span></div>
-    <div class="bracket-side ${winner === match.awayId ? 'winner' : ''}"><span><b>${escapeHtml(participantName(tournament,match.awayId))}</b>${match.awayChoice ? `<small>${escapeHtml(match.awayChoice)}</small>` : ''}</span><span>${match.played ? match.awayScore : '—'}<small>${profile.scoreShort}</small></span></div>
-  </button>`;
+
+function bracketNodeHtml(tournament, node, model) {
+  const match = node.actualMatch;
+  const winnerId = matchWinner(match || {});
+  const ready = Boolean(match?.homeId && match?.awayId);
+  const tag = ready ? 'button' : 'article';
+  const attrs = ready ? `type="button" data-edit-match="${match.id}"` : '';
+  return `<div class="bracket-node-wrap" data-bracket-key="${node.key}" data-bracket-sources="${node.sources.join(',')}">
+    <${tag} class="bracket-node ${match?.played ? 'played' : ''} ${ready ? 'ready' : 'locked'}" ${attrs}>
+      <div class="bracket-node-head"><span>JOGO ${String(node.gameNumber).padStart(2, '0')}</span><b>${match?.played ? 'ENCERRADO' : ready ? 'PRONTO' : 'AGUARDANDO'}</b></div>
+      ${bracketSlotHtml(node.home, model, match?.played ? match.homeScore : null, winnerId && winnerId === match?.homeId, match?.homeChoice, match?.homeChoiceImage)}
+      ${bracketSlotHtml(node.away, model, match?.played ? match.awayScore : null, winnerId && winnerId === match?.awayId, match?.awayChoice, match?.awayChoiceImage)}
+    </${tag}>
+  </div>`;
+}
+
+function fullBracketBoardHtml(tournament, model) {
+  const largestRound = Math.max(...model.columns.map((column) => column.nodes.length), 1);
+  const boardHeight = Math.max(620, largestRound * 154);
+  return `<div class="bracket-board-scroll">
+    <div class="bracket-board" style="--bracket-height:${boardHeight}px;--bracket-columns:${model.columns.length}">
+      <svg class="bracket-connectors" aria-hidden="true"></svg>
+      ${model.columns.map((column, index) => `<section class="bracket-stage">
+        <header class="bracket-stage-head"><span>FASE ${String(index + 1).padStart(2, '0')}</span><h3>${escapeHtml(column.title)}</h3><small>${column.nodes.length} confronto${column.nodes.length === 1 ? '' : 's'}</small></header>
+        <div class="bracket-stage-matches">${column.nodes.map((node) => bracketNodeHtml(tournament, node, model)).join('')}</div>
+      </section>`).join('')}
+    </div>
+  </div>`;
+}
+
+function drawBracketConnectors() {
+  const board = $('.bracket-board');
+  const svg = $('.bracket-connectors');
+  if (!board || !svg) return;
+  const boardRect = board.getBoundingClientRect();
+  const width = board.scrollWidth;
+  const height = board.scrollHeight;
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.setAttribute('width', width);
+  svg.setAttribute('height', height);
+  svg.innerHTML = '';
+
+  $$('[data-bracket-sources]', board).forEach((target) => {
+    const sources = String(target.dataset.bracketSources || '').split(',').filter(Boolean);
+    if (!sources.length) return;
+    const targetRect = target.getBoundingClientRect();
+    const targetX = targetRect.left - boardRect.left;
+    const targetY = targetRect.top - boardRect.top + targetRect.height / 2;
+
+    sources.forEach((sourceKey) => {
+      const source = board.querySelector(`[data-bracket-key="${CSS.escape(sourceKey)}"]`);
+      if (!source) return;
+      const sourceRect = source.getBoundingClientRect();
+      const sourceX = sourceRect.right - boardRect.left;
+      const sourceY = sourceRect.top - boardRect.top + sourceRect.height / 2;
+      const bendX = sourceX + Math.max(28, (targetX - sourceX) / 2);
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', `M ${sourceX} ${sourceY} H ${bendX} V ${targetY} H ${targetX}`);
+      path.setAttribute('class', 'bracket-connector-path');
+      svg.append(path);
+    });
+  });
+}
+
+function bracketTabHtml(tournament) {
+  const model = bracketDisplayModel(tournament);
+  const pairingLabel = model.seeded ? 'Melhor contra pior' : 'Sorteio livre';
+  const initialByes = tournament.knockoutState?.initialByes || [];
+  const isPreview = tournament.format === 'mixed' && !tournament.knockoutState.started;
+  const canGenerate = isPreview && allLeagueMatchesPlayed(tournament);
+
+  return `<div class="stack bracket-tab">
+    <section class="bracket-hero">
+      <div>
+        <span class="panel-kicker">${isPreview ? 'MAPA PROJETADO' : 'CHAVE OFICIAL'}</span>
+        <h2>Mata-mata completo</h2>
+        <p>${isPreview
+          ? `A estrutura já está pronta. Os nomes serão preenchidos quando a liga terminar e os ${tournament.settings.qualifiers} classificados forem definidos.`
+          : 'Todas as fases ficam visíveis desde o início. Os vencedores avançam automaticamente sem esconder as próximas rodadas.'}</p>
+      </div>
+      <div class="bracket-hero-actions">
+        ${canGenerate ? '<button class="button primary" data-generate-knockout>Gerar chave com os classificados</button>' : ''}
+        ${isPreview && !canGenerate ? '<span class="status-pill">Finalize a liga para preencher os nomes</span>' : ''}
+      </div>
+    </section>
+
+    <div class="bracket-summary">
+      <div><span>MÉTODO DA CHAVE</span><strong>${pairingLabel}</strong></div>
+      <div><span>CLASSIFICADOS</span><strong>${model.total}</strong></div>
+      <div><span>FOLGAS INICIAIS</span><strong>${model.plan.byes}</strong></div>
+      <div><span>JOGOS DO MATA-MATA</span><strong>${Math.max(0, model.total - 1)}${tournament.settings.thirdPlace ? ' + 1' : ''}</strong></div>
+    </div>
+
+    ${model.plan.byes ? `<div class="bye-strip"><div><strong>${model.plan.byes} folga${model.plan.byes === 1 ? '' : 's'} na entrada da chave</strong><span>${model.seeded ? 'As melhores posições recebem a vantagem.' : 'As folgas são definidas pelo sorteio.'}</span></div>${initialByes.length ? `<div class="bye-list">${initialByes.map((id) => `<span class="bye-chip">${escapeHtml(participantName(tournament, id))}<b>FOLGA</b></span>`).join('')}</div>` : ''}</div>` : ''}
+
+    ${fullBracketBoardHtml(tournament, model)}
+
+    ${model.thirdPlace ? `<section class="third-place-panel"><div><span class="panel-kicker">PARTIDA EXTRA</span><h3>Disputa de 3º lugar</h3><p>Os perdedores das semifinais aparecem aqui automaticamente.</p></div><div class="third-place-card">${bracketNodeHtml(tournament, model.thirdPlace, model)}</div></section>` : ''}
+  </div>`;
 }
 
 function playerStats(tournament) {
@@ -1250,8 +1649,10 @@ function choiceStatistics(tournament) {
   const add = (name, side, match) => {
     const key = String(name || '').trim();
     if (!key) return;
-    if (!map.has(key)) map.set(key, { name:key, picks:0,wins:0,losses:0,draws:0,scoreFor:0,scoreAgainst:0,kills:0,deaths:0,assists:0 });
+    const image = side === 'home' ? match.homeChoiceImage : match.awayChoiceImage;
+    if (!map.has(key)) map.set(key, { name:key, image:image || '', picks:0,wins:0,losses:0,draws:0,scoreFor:0,scoreAgainst:0,kills:0,deaths:0,assists:0 });
     const row = map.get(key);
+    if (!row.image && image) row.image = image;
     const ownId = side === 'home' ? match.homeId : match.awayId;
     const ownScore = Number(side === 'home' ? match.homeScore : match.awayScore) || 0;
     const oppScore = Number(side === 'home' ? match.awayScore : match.homeScore) || 0;
@@ -1344,7 +1745,7 @@ function statisticsTabHtml(tournament) {
           <div><span>Menos escolhido</span><strong>${escapeHtml(leastChosen?.name || '—')}</strong></div>
           <div><span>Melhor aproveitamento</span><strong>${escapeHtml(bestChoice?.name || '—')}</strong><small>${bestChoice ? `${bestChoice.winRate.toFixed(1)}%` : ''}</small></div>
         </div>
-        <div class="table-wrap"><table class="stats-table"><thead><tr><th>${profile.id === 'fifa' ? 'Time' : profile.id === 'lol' ? 'Campeão' : 'Beyblade'}</th><th class="num">ESC</th><th class="num">V</th><th class="num">D</th><th class="num">WR</th>${profile.id === 'lol' ? '<th class="num">K</th><th class="num">D</th><th class="num">A</th><th class="num">KDA</th>' : `<th class="num">${profile.scoreShort}+</th><th class="num">${profile.scoreShort}-</th>`}</tr></thead><tbody>${choices.length ? choices.map((row)=>`<tr><td><strong>${escapeHtml(row.name)}</strong></td><td class="num">${row.picks}</td><td class="num win-cell">${row.wins}</td><td class="num loss-cell">${row.losses}</td><td class="num"><strong>${row.winRate.toFixed(1)}%</strong></td>${profile.id === 'lol' ? `<td class="num">${row.kills}</td><td class="num">${row.deaths}</td><td class="num">${row.assists}</td><td class="num">${row.kda.toFixed(2)}</td>` : `<td class="num">${row.scoreFor}</td><td class="num">${row.scoreAgainst}</td>`}</tr>`).join('') : `<tr><td colspan="9" class="empty-cell">Registre partidas e informe ${profile.choiceLabel.toLowerCase()} para gerar este ranking.</td></tr>`}</tbody></table></div>
+        <div class="table-wrap"><table class="stats-table"><thead><tr><th>${profile.id === 'fifa' ? 'Time' : profile.id === 'lol' ? 'Campeão' : 'Beyblade'}</th><th class="num">ESC</th><th class="num">V</th><th class="num">D</th><th class="num">WR</th>${profile.id === 'lol' ? '<th class="num">K</th><th class="num">D</th><th class="num">A</th><th class="num">KDA</th>' : `<th class="num">${profile.scoreShort}+</th><th class="num">${profile.scoreShort}-</th>`}</tr></thead><tbody>${choices.length ? choices.map((row)=>`<tr><td>${choiceIdentityHtml(row.name, row.image)}</td><td class="num">${row.picks}</td><td class="num win-cell">${row.wins}</td><td class="num loss-cell">${row.losses}</td><td class="num"><strong>${row.winRate.toFixed(1)}%</strong></td>${profile.id === 'lol' ? `<td class="num">${row.kills}</td><td class="num">${row.deaths}</td><td class="num">${row.assists}</td><td class="num">${row.kda.toFixed(2)}</td>` : `<td class="num">${row.scoreFor}</td><td class="num">${row.scoreAgainst}</td>`}</tr>`).join('') : `<tr><td colspan="9" class="empty-cell">Registre partidas e informe ${profile.choiceLabel.toLowerCase()} para gerar este ranking.</td></tr>`}</tbody></table></div>
       </section>
       <section class="panel analytics-panel">
         <div class="panel-head"><div><span class="panel-kicker">DESEMPENHO</span><h3>Jogadores</h3><p>Campanha individual somente neste campeonato.</p></div></div>
@@ -1377,34 +1778,115 @@ function matchGameFieldsHtml(tournament, match, home, away, knockout) {
   const profile = getGameProfile(tournament);
   if (profile.id === 'lol') {
     return `<div class="versus-form game-lol">
-      ${lolSideForm('home',home,match.homeChoice,match.homeScore,match.homeDeaths,match.homeAssists)}
+      ${lolSideForm('home',home,match.homeChoice,match.homeScore,match.homeDeaths,match.homeAssists,match.homeChoiceImage)}
       <div class="versus-divider"><span>VS</span></div>
-      ${lolSideForm('away',away,match.awayChoice,match.awayScore,match.awayDeaths,match.awayAssists)}
+      ${lolSideForm('away',away,match.awayChoice,match.awayScore,match.awayDeaths,match.awayAssists,match.awayChoiceImage)}
     </div>
     <label class="field winner-field"><span>Vencedor da partida</span><select id="manualWinner" required><option value="">Selecione o vencedor</option><option value="${home.id}" ${match.winnerId === home.id ? 'selected' : ''}>${escapeHtml(home.name)}</option><option value="${away.id}" ${match.winnerId === away.id ? 'selected' : ''}>${escapeHtml(away.name)}</option></select><small>Kills não definem obrigatoriamente o vencedor; por isso ele é informado separadamente.</small></label>`;
   }
   if (profile.id === 'beyblade') {
     return `<div class="versus-form game-beyblade">
-      ${basicSideForm('home',home,profile,match.homeChoice,match.homeScore)}
+      ${basicSideForm('home',home,profile,match.homeChoice,match.homeScore,match.homeChoiceImage)}
       <div class="versus-divider"><span>VS</span></div>
-      ${basicSideForm('away',away,profile,match.awayChoice,match.awayScore)}
+      ${basicSideForm('away',away,profile,match.awayChoice,match.awayScore,match.awayChoiceImage)}
     </div>
     <div class="grid cols-2"><label class="field"><span>Vencedor da batalha</span><select id="manualWinner" required><option value="">Selecione o vencedor</option><option value="${home.id}" ${match.winnerId === home.id ? 'selected' : ''}>${escapeHtml(home.name)}</option><option value="${away.id}" ${match.winnerId === away.id ? 'selected' : ''}>${escapeHtml(away.name)}</option></select></label><label class="field"><span>Tipo de finalização</span><select id="finishType"><option value="">Não informado</option>${profile.finishTypes.map((type)=>`<option value="${type}" ${match.finishType === type ? 'selected' : ''}>${type}</option>`).join('')}</select></label></div>`;
   }
   return `<div class="versus-form game-fifa">
-    ${basicSideForm('home',home,profile,match.homeChoice,match.homeScore)}
+    ${basicSideForm('home',home,profile,match.homeChoice,match.homeScore,match.homeChoiceImage)}
     <div class="versus-divider"><span>VS</span></div>
-    ${basicSideForm('away',away,profile,match.awayChoice,match.awayScore)}
+    ${basicSideForm('away',away,profile,match.awayChoice,match.awayScore,match.awayChoiceImage)}
   </div>
   ${knockout ? `<label class="field winner-field"><span>Vencedor em caso de empate</span><select id="manualWinner"><option value="">Definir pelo placar</option><option value="${home.id}" ${match.winnerId === home.id ? 'selected' : ''}>${escapeHtml(home.name)}</option><option value="${away.id}" ${match.winnerId === away.id ? 'selected' : ''}>${escapeHtml(away.name)}</option></select></label>` : ''}`;
 }
 
-function basicSideForm(side, participant, profile, choice, score) {
-  return `<section class="side-form"><div class="side-form-head"><span>${side === 'home' ? 'LADO A' : 'LADO B'}</span><strong>${escapeHtml(participant.name)}</strong></div><label class="field"><span>${profile.choiceLabel}</span><input id="${side}Choice" value="${escapeHtml(choice || '')}" placeholder="Digite ${profile.choiceLabel.toLowerCase()}"></label><label class="field score-input"><span>${profile.scoreLabel}</span><input id="${side}Score" type="number" min="0" value="${score ?? ''}" required></label></section>`;
+
+function gameAssetField(side, profile, value = '', image = '') {
+  const enabled = profile.id === 'fifa' || profile.id === 'lol';
+  if (!enabled) {
+    return `<label class="field"><span>${profile.choiceLabel}</span><input id="${side}Choice" value="${escapeHtml(value || '')}" placeholder="Digite ${profile.choiceLabel.toLowerCase()}"><input id="${side}ChoiceImage" type="hidden" value="${escapeHtml(image || '')}"></label>`;
+  }
+  return `<label class="field asset-picker-field">
+    <span>${profile.choiceLabel}</span>
+    <div class="asset-picker" data-asset-picker="${side}" data-game="${profile.id}">
+      <span class="asset-picker-preview" id="${side}ChoicePreview">${image ? `<img src="${escapeHtml(image)}" alt="">` : `<b>${profile.id === 'fifa' ? '⚽' : '◈'}</b>`}</span>
+      <input id="${side}Choice" data-asset-input="${side}" value="${escapeHtml(value || '')}" autocomplete="off" placeholder="${profile.id === 'fifa' ? 'Busque o nome do clube' : 'Busque o campeão'}">
+      <input id="${side}ChoiceImage" type="hidden" value="${escapeHtml(image || '')}">
+      <span class="asset-picker-loading" data-asset-loading="${side}"></span>
+    </div>
+    <div class="asset-picker-results" data-asset-results="${side}"></div>
+    <small>${profile.id === 'fifa' ? 'O escudo será buscado automaticamente.' : 'A imagem oficial do campeão será carregada pelo Data Dragon.'}</small>
+  </label>`;
 }
 
-function lolSideForm(side, participant, champion, kills, deaths, assists) {
-  return `<section class="side-form"><div class="side-form-head"><span>${side === 'home' ? 'LADO AZUL' : 'LADO VERMELHO'}</span><strong>${escapeHtml(participant.name)}</strong></div><label class="field"><span>Campeão utilizado</span><input id="${side}Choice" value="${escapeHtml(champion || '')}" placeholder="Ex.: Akali"></label><div class="kda-inputs"><label class="field"><span>Kills</span><input id="${side}Score" type="number" min="0" value="${kills ?? ''}" required></label><label class="field"><span>Mortes</span><input id="${side}Deaths" type="number" min="0" value="${deaths ?? 0}" required></label><label class="field"><span>Assistências</span><input id="${side}Assists" type="number" min="0" value="${assists ?? 0}" required></label></div></section>`;
+function basicSideForm(side, participant, profile, choice, score, image = '') {
+  return `<section class="side-form"><div class="side-form-head"><span>${side === 'home' ? 'LADO A' : 'LADO B'}</span><strong>${escapeHtml(participant.name)}</strong></div>${gameAssetField(side, profile, choice, image)}<label class="field score-input"><span>${profile.scoreLabel}</span><input id="${side}Score" type="number" min="0" value="${score ?? ''}" required></label></section>`;
+}
+
+function lolSideForm(side, participant, champion, kills, deaths, assists, image = '') {
+  const profile = GAME_PROFILES.lol;
+  return `<section class="side-form"><div class="side-form-head"><span>${side === 'home' ? 'LADO AZUL' : 'LADO VERMELHO'}</span><strong>${escapeHtml(participant.name)}</strong></div>${gameAssetField(side, profile, champion, image)}<div class="kda-inputs"><label class="field"><span>Kills</span><input id="${side}Score" type="number" min="0" value="${kills ?? ''}" required></label><label class="field"><span>Mortes</span><input id="${side}Deaths" type="number" min="0" value="${deaths ?? 0}" required></label><label class="field"><span>Assistências</span><input id="${side}Assists" type="number" min="0" value="${assists ?? 0}" required></label></div></section>`;
+}
+
+async function fetchGameAssets(game, query) {
+  const cacheKey = `${game}:${String(query || '').trim().toLowerCase()}`;
+  if (state.assetSearchCache.has(cacheKey)) return state.assetSearchCache.get(cacheKey);
+  const response = await fetch(`/api/game-assets?game=${encodeURIComponent(game)}&q=${encodeURIComponent(query)}`);
+  if (!response.ok) throw new Error('Não foi possível buscar imagens.');
+  const payload = await response.json();
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  state.assetSearchCache.set(cacheKey, items);
+  return items;
+}
+
+function bindGameAssetPicker(game, side) {
+  const input = $(`[data-asset-input="${side}"]`);
+  const results = $(`[data-asset-results="${side}"]`);
+  const imageInput = $(`#${side}ChoiceImage`);
+  const preview = $(`#${side}ChoicePreview`);
+  const loading = $(`[data-asset-loading="${side}"]`);
+  if (!input || !results || !imageInput || !preview) return;
+
+  const close = () => { results.innerHTML = ''; results.classList.remove('show'); };
+  const render = (items) => {
+    if (!items.length) {
+      results.innerHTML = `<div class="asset-empty">Nenhum resultado encontrado.</div>`;
+      results.classList.add('show');
+      return;
+    }
+    results.innerHTML = items.map((item, index) => `<button type="button" class="asset-result" data-asset-index="${index}">
+      <span>${item.image ? `<img src="${escapeHtml(item.image)}" alt="">` : '<b>?</b>'}</span>
+      <div><strong>${escapeHtml(item.name)}</strong>${item.subtitle ? `<small>${escapeHtml(item.subtitle)}</small>` : ''}</div>
+    </button>`).join('');
+    results.classList.add('show');
+    $$('[data-asset-index]', results).forEach((button) => button.addEventListener('click', () => {
+      const item = items[Number(button.dataset.assetIndex)];
+      input.value = item.name;
+      imageInput.value = item.image || '';
+      preview.innerHTML = item.image ? `<img src="${escapeHtml(item.image)}" alt="">` : `<b>${game === 'fifa' ? '⚽' : '◈'}</b>`;
+      close();
+    }));
+  };
+
+  const search = async () => {
+    const query = input.value.trim();
+    const minimum = game === 'fifa' ? 2 : 1;
+    if (query.length < minimum) return close();
+    loading.classList.add('show');
+    try { render(await fetchGameAssets(game, query)); }
+    catch { close(); }
+    finally { loading.classList.remove('show'); }
+  };
+
+  input.addEventListener('input', () => {
+    imageInput.value = '';
+    preview.innerHTML = `<b>${game === 'fifa' ? '⚽' : '◈'}</b>`;
+    clearTimeout(state.assetSearchTimers[side]);
+    state.assetSearchTimers[side] = setTimeout(search, 280);
+  });
+  input.addEventListener('focus', () => {
+    if (input.value.trim()) search();
+  });
 }
 
 function openMatchModal(tournamentId, matchId) {
@@ -1427,6 +1909,11 @@ function openMatchModal(tournamentId, matchId) {
       </div>
       <div class="modal-foot"><div>${match.played ? '<button class="button danger" type="button" data-clear-result>Limpar resultado</button>' : ''}</div><div style="display:flex;gap:8px"><button class="button ghost" type="button" data-close>Cancelar</button><button class="button primary" type="submit">Salvar resultado</button></div></div>
     </form>`,'wide');
+
+  if (profile.id === 'fifa' || profile.id === 'lol') {
+    bindGameAssetPicker(profile.id, 'home');
+    bindGameAssetPicker(profile.id, 'away');
+  }
 
   $$('[data-close]').forEach((button) => button.addEventListener('click', closeModal));
   $('[data-clear-result]')?.addEventListener('click', async () => {
@@ -1461,6 +1948,8 @@ function openMatchModal(tournamentId, matchId) {
     match.played = true;
     match.homeChoice = $('#homeChoice').value.trim();
     match.awayChoice = $('#awayChoice').value.trim();
+    match.homeChoiceImage = $('#homeChoiceImage')?.value || '';
+    match.awayChoiceImage = $('#awayChoiceImage')?.value || '';
     match.homeDeaths = Number($('#homeDeaths')?.value || 0);
     match.awayDeaths = Number($('#awayDeaths')?.value || 0);
     match.homeAssists = Number($('#homeAssists')?.value || 0);
@@ -1502,7 +1991,7 @@ function resetMixedKnockout(tournament) {
 
 function clearMatchResult(tournament, match) {
   if (match.stage === 'knockout') truncateKnockoutAfter(tournament, match.bracketRound);
-  Object.assign(match, { homeScore:null, awayScore:null, winnerId:null, played:false, homeChoice:'', awayChoice:'', homeDeaths:0, awayDeaths:0, homeAssists:0, awayAssists:0, finishType:'', mvpPlayerId:'', notes:'' });
+  Object.assign(match, { homeScore:null, awayScore:null, winnerId:null, played:false, homeChoice:'', awayChoice:'', homeChoiceImage:'', awayChoiceImage:'', homeDeaths:0, awayDeaths:0, homeAssists:0, awayAssists:0, finishType:'', mvpPlayerId:'', notes:'' });
   tournament.championId = null;
   updateLeagueChampion(tournament);
 }
