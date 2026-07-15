@@ -7,6 +7,65 @@ const escapeHtml = (value = '') => String(value)
   .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
   .replaceAll('"', '&quot;').replaceAll("'", '&#039;');
 
+
+const GAME_PROFILES = {
+  fifa: {
+    id: 'fifa',
+    label: 'FIFA',
+    short: 'FIFA',
+    icon: '⚽',
+    description: 'Gols, times utilizados, goleadas e desempenho por clube.',
+    scoreLabel: 'Gols',
+    scoreShort: 'G',
+    choiceLabel: 'Time utilizado',
+    choicePlural: 'Times',
+    drawAllowed: true
+  },
+  lol: {
+    id: 'lol',
+    label: 'League of Legends',
+    short: 'LOL',
+    icon: '◈',
+    description: 'Campeões, kills, mortes, assistências, KDA e win rate.',
+    scoreLabel: 'Kills',
+    scoreShort: 'K',
+    choiceLabel: 'Campeão utilizado',
+    choicePlural: 'Campeões',
+    drawAllowed: false
+  },
+  beyblade: {
+    id: 'beyblade',
+    label: 'Beyblade',
+    short: 'BEY',
+    icon: '◎',
+    description: 'Pontos, beyblades usados, aproveitamento e tipo de finalização.',
+    scoreLabel: 'Pontos',
+    scoreShort: 'PTS',
+    choiceLabel: 'Beyblade utilizado',
+    choicePlural: 'Beyblades',
+    drawAllowed: false,
+    finishTypes: ['Spin Finish', 'Burst Finish', 'Over Finish', 'Extreme Finish', 'Outro']
+  }
+};
+
+function detectGameProfile(value = '') {
+  const text = String(value).toLowerCase();
+  if (text.includes('league') || text === 'lol' || text.includes('legends')) return 'lol';
+  if (text.includes('bey')) return 'beyblade';
+  return 'fifa';
+}
+
+function getGameProfile(tournamentOrId) {
+  const id = typeof tournamentOrId === 'string'
+    ? tournamentOrId
+    : tournamentOrId?.gameProfile || detectGameProfile(tournamentOrId?.game);
+  return GAME_PROFILES[id] || GAME_PROFILES.fifa;
+}
+
+function gameProfileClass(tournament) {
+  return `game-${getGameProfile(tournament).id}`;
+}
+
 const LOCAL_KEY = 'arena_maker_v4_tournaments';
 
 const state = {
@@ -97,7 +156,10 @@ function loadLocalData() {
 function normalizeTournament(raw) {
   if (!raw || typeof raw !== 'object') return raw;
   const tournament = clone(raw);
-  tournament.version = tournament.version || 3;
+  tournament.version = tournament.version || 6;
+  tournament.gameProfile = tournament.gameProfile || detectGameProfile(tournament.game);
+  const profile = getGameProfile(tournament.gameProfile);
+  tournament.game = profile.label;
   tournament.participants = (tournament.participants || []).map((participant) => ({
     id: participant.id || uid(),
     name: participant.name || 'Participante',
@@ -108,7 +170,9 @@ function normalizeTournament(raw) {
     pointsWin: tournament.settings?.pointsWin ?? 3,
     pointsDraw: tournament.settings?.pointsDraw ?? 1,
     qualifiers: tournament.settings?.qualifiers || 8,
-    thirdPlace: tournament.settings?.thirdPlace ?? true
+    thirdPlace: tournament.settings?.thirdPlace ?? true,
+    knockoutPairing: tournament.settings?.knockoutPairing || tournament.knockoutState?.pairing || (tournament.knockoutState?.seeded ? 'seeded' : 'draw'),
+    bracketMode: tournament.settings?.bracketMode || 'flexible'
   };
   tournament.matches = (tournament.matches || []).map((match) => {
     const oldStage = String(match.stage || '').toLowerCase();
@@ -118,16 +182,28 @@ function normalizeTournament(raw) {
       stage,
       roundName: match.roundName || match.label || (stage === 'league' ? `Rodada ${match.round || 1}` : stage === 'third' ? 'Disputa de 3º lugar' : knockoutRoundName(2 ** Math.max(1, (match.bracketRound || 1)))),
       homeLineup: match.homeLineup || participantById({ participants: tournament.participants }, match.homeId)?.players.map((player) => player.id) || [],
-      awayLineup: match.awayLineup || participantById({ participants: tournament.participants }, match.awayId)?.players.map((player) => player.id) || []
+      awayLineup: match.awayLineup || participantById({ participants: tournament.participants }, match.awayId)?.players.map((player) => player.id) || [],
+      homeChoice: match.homeChoice || '',
+      awayChoice: match.awayChoice || '',
+      homeDeaths: Number(match.homeDeaths ?? match.gameData?.homeDeaths ?? 0),
+      awayDeaths: Number(match.awayDeaths ?? match.gameData?.awayDeaths ?? 0),
+      homeAssists: Number(match.homeAssists ?? match.gameData?.homeAssists ?? 0),
+      awayAssists: Number(match.awayAssists ?? match.gameData?.awayAssists ?? 0),
+      finishType: match.finishType || match.gameData?.finishType || ''
     };
   });
   tournament.knockoutState = tournament.knockoutState || {
     started: tournament.format === 'knockout' || tournament.matches.some((match) => match.stage === 'knockout'),
     currentRound: Math.max(0, ...tournament.matches.filter((match) => match.stage === 'knockout').map((match) => match.bracketRound || 0)),
     pendingByes: [],
-    seeded: tournament.format === 'mixed'
+    initialByes: [],
+    pairing: tournament.settings.knockoutPairing,
+    seeded: tournament.settings.knockoutPairing === 'seeded'
   };
-  tournament.extraLabel = tournament.extraLabel || tournament.usageLabel || 'Escolha usada';
+  tournament.knockoutState.initialByes = tournament.knockoutState.initialByes || [...(tournament.knockoutState.pendingByes || [])];
+  tournament.knockoutState.pairing = tournament.knockoutState.pairing || (tournament.knockoutState.seeded ? 'seeded' : tournament.settings.knockoutPairing || 'draw');
+  tournament.knockoutState.seeded = tournament.knockoutState.pairing === 'seeded';
+  tournament.extraLabel = profile.choiceLabel;
   tournament.createdAt = tournament.createdAt || tournament.created_at || now();
   tournament.updatedAt = tournament.updatedAt || tournament.updated_at || tournament.createdAt;
   tournament.status = tournament.championId ? 'finished' : 'active';
@@ -245,9 +321,7 @@ function renderTournamentsView() {
       <div class="toolbar-right"><span class="format-badge">${state.localMode ? 'Modo local' : 'Supabase'}</span></div>
     </div>
 
-    <div class="panel">
-      ${tournaments.length ? tournamentTableHtml(tournaments) : emptyTournamentsHtml(all.length > 0)}
-    </div>`;
+    ${tournaments.length ? tournamentTableHtml(tournaments) : `<div class="panel">${emptyTournamentsHtml(all.length > 0)}</div>`}`;
 
   $$('[data-filter]').forEach((button) => button.addEventListener('click', () => {
     state.filter = button.dataset.filter;
@@ -255,30 +329,45 @@ function renderTournamentsView() {
   }));
   $$('[data-open-tournament]').forEach((button) => button.addEventListener('click', () => {
     state.activeTournamentId = button.dataset.openTournament;
-    state.detailTab = 'matches';
+    const opened = tournamentById(state.activeTournamentId);
+    state.detailTab = opened?.format === 'knockout' ? 'bracket' : 'standings';
     renderTournamentsView();
   }));
   $$('[data-create-tournament]').forEach((button) => button.addEventListener('click', openTournamentWizard));
 }
 
 function tournamentTableHtml(tournaments) {
-  return `<div class="table-wrap"><table class="tournament-table">
-    <thead><tr><th>Campeonato</th><th>Formato</th><th>Participantes</th><th>Fase atual</th><th>Progresso</th><th>Status</th><th></th></tr></thead>
-    <tbody>${tournaments.map((tournament) => {
-      const played = playedMatches(tournament);
-      const total = playableMatches(tournament);
-      const percent = total ? Math.round((played / total) * 100) : 0;
-      return `<tr>
-        <td class="tournament-name"><strong>${escapeHtml(tournament.name)}</strong><span>${escapeHtml(tournament.game || 'Jogo não informado')} · ${new Date(tournament.updatedAt || tournament.createdAt).toLocaleDateString('pt-BR')}</span></td>
-        <td><span class="format-badge">${formatLabel(tournament.format)}</span></td>
-        <td>${tournament.participants.length} ${tournament.mode === 'teams' ? 'equipes' : 'jogadores'}</td>
-        <td>${escapeHtml(currentStageLabel(tournament))}</td>
-        <td><div class="progress-line"><div class="progress-track"><div class="progress-fill" style="width:${percent}%"></div></div><div class="progress-copy">${played} de ${total} jogos registrados</div></div></td>
-        <td><span class="status ${tournament.championId ? 'finished' : ''}">${tournament.championId ? 'Finalizado' : 'Em andamento'}</span></td>
-        <td><div class="row-actions"><button class="button small secondary" data-open-tournament="${tournament.id}">Abrir</button></div></td>
-      </tr>`;
-    }).join('')}</tbody>
-  </table></div>`;
+  return `<div class="tournament-grid">${tournaments.map((tournament) => {
+    const played = playedMatches(tournament);
+    const total = playableMatches(tournament);
+    const percent = total ? Math.round((played / total) * 100) : 0;
+    const champion = tournament.championId ? participantName(tournament, tournament.championId) : '';
+    const profile = getGameProfile(tournament);
+    return `<article class="tournament-card ${gameProfileClass(tournament)}" data-open-tournament="${tournament.id}" tabindex="0">
+      <div class="tournament-card-accent"></div>
+      <div class="tournament-card-top">
+        <div>
+          <span class="game-kicker"><b>${profile.icon}</b> ${escapeHtml(profile.label)}</span>
+          <h3>${escapeHtml(tournament.name)}</h3>
+        </div>
+        <span class="status-pill ${tournament.championId ? 'finished' : ''}">${tournament.championId ? 'Finalizado' : 'Em andamento'}</span>
+      </div>
+      <div class="tournament-card-meta">
+        <span>${formatLabel(tournament.format)}</span>
+        <span>${tournament.participants.length} ${tournament.mode === 'teams' ? 'equipes' : 'jogadores'}</span>
+        <span>${escapeHtml(currentStageLabel(tournament))}</span>
+      </div>
+      ${champion ? `<div class="tournament-champion"><span>CAMPEÃO</span><strong>${escapeHtml(champion)}</strong></div>` : `
+      <div class="tournament-progress">
+        <div class="progress-copy"><span>${played} de ${total} jogos</span><strong>${percent}%</strong></div>
+        <div class="progress-track"><div class="progress-fill" style="width:${percent}%"></div></div>
+      </div>`}
+      <div class="tournament-card-foot">
+        <span>Atualizado em ${new Date(tournament.updatedAt || tournament.createdAt).toLocaleDateString('pt-BR')}</span>
+        <button class="button small primary" data-open-tournament="${tournament.id}">Abrir campeonato</button>
+      </div>
+    </article>`;
+  }).join('')}</div>`;
 }
 
 function emptyTournamentsHtml(filtered) {
@@ -294,16 +383,17 @@ function newWizardState() {
   return {
     step: 1,
     name: '',
-    game: '',
+    gameProfile: 'fifa',
     format: 'mixed',
     mode: 'individual',
-    extraLabel: 'Escolha usada',
     entrants: [],
     teams: [newWizardTeam('Equipe 1'), newWizardTeam('Equipe 2')],
     leagueLegs: 1,
     pointsWin: 3,
     pointsDraw: 1,
     qualifiers: 8,
+    knockoutPairing: 'seeded',
+    bracketMode: 'complete',
     thirdPlace: true
   };
 }
@@ -319,15 +409,16 @@ function openTournamentWizard() {
 
 function renderWizard() {
   const wizard = state.wizard;
+  const profile = getGameProfile(wizard.gameProfile);
   openModal(`
-    <div class="modal-head">
-      <div><div class="eyebrow">NOVO CAMPEONATO</div><h2>Montar competição</h2></div>
+    <div class="modal-head ${`game-${profile.id}`}">
+      <div><div class="eyebrow">NOVO CAMPEONATO · ${profile.short}</div><h2>Montar competição</h2></div>
       <button class="icon-button" data-close>×</button>
     </div>
     <div class="modal-body">
       <div class="wizard-layout">
         <aside class="wizard-steps">
-          ${['Formato','Participantes','Regras','Revisão'].map((label, index) => `<div class="wizard-step ${wizard.step === index + 1 ? 'active' : ''}"><span class="step-number">${index + 1}</span><span>${label}</span></div>`).join('')}
+          ${['Jogo e formato','Participantes','Regras','Revisão'].map((label, index) => `<div class="wizard-step ${wizard.step === index + 1 ? 'active' : ''}"><span class="step-number">${index + 1}</span><span>${label}</span></div>`).join('')}
         </aside>
         <div class="wizard-content">${wizardStepHtml(wizard)}</div>
       </div>
@@ -352,7 +443,7 @@ function renderWizard() {
       await persistTournament(tournament);
       closeModal();
       state.activeTournamentId = tournament.id;
-      state.detailTab = 'matches';
+      state.detailTab = tournament.format === 'knockout' ? 'bracket' : 'standings';
       renderTournamentsView();
       toast('Campeonato criado e confrontos sorteados.', 'success');
     } catch (error) {
@@ -371,26 +462,43 @@ function wizardStepHtml(wizard) {
 }
 
 function wizardFormatHtml(wizard) {
-  return `<h3>Formato principal</h3><p>Defina o tipo de competição. Os participantes serão adicionados somente no próximo passo e ficarão dentro deste campeonato.</p>
+  const selectedProfile = getGameProfile(wizard.gameProfile);
+  return `<h3>Escolha o jogo e o formato</h3><p>O jogo define os campos de cada partida e todas as estatísticas. O formato define apenas a estrutura da competição.</p>
     <div class="stack">
-      <div class="grid cols-2">
-        <label class="field"><span>Nome do campeonato</span><input id="wizardName" value="${escapeHtml(wizard.name)}" placeholder="Ex.: Arena de sábado" autofocus></label>
-        <label class="field"><span>Jogo</span><input id="wizardGame" value="${escapeHtml(wizard.game)}" placeholder="Ex.: League of Legends, FIFA, Tekken"></label>
-      </div>
-      <div class="choice-grid">
-        ${formatChoice('league','Liga','Todos enfrentam todos. A classificação final define o campeão.',wizard.format)}
-        ${formatChoice('knockout','Mata-mata','Confrontos eliminatórios. Quantidades irregulares recebem folgas automáticas.',wizard.format)}
-        ${formatChoice('mixed','Liga + mata-mata','Todos jogam a liga e a quantidade escolhida de classificados avança.',wizard.format)}
-      </div>
-      <div class="grid cols-2">
-        <label class="field"><span>Disputa</span><select id="wizardMode"><option value="individual" ${wizard.mode === 'individual' ? 'selected' : ''}>Individual</option><option value="teams" ${wizard.mode === 'teams' ? 'selected' : ''}>Por equipes</option></select></label>
-        <label class="field"><span>Nome da informação extra por partida</span><input id="wizardExtraLabel" value="${escapeHtml(wizard.extraLabel)}" placeholder="Ex.: Campeão usado, time escolhido"></label>
-      </div>
+      <label class="field"><span>Nome do campeonato</span><input id="wizardName" value="${escapeHtml(wizard.name)}" placeholder="Ex.: Copa de sábado — Julho" autofocus></label>
+      <section class="game-profile-section">
+        <div class="section-title-line"><div><span>01</span><div><strong>Jogo do campeonato</strong><small>Os painéis e formulários mudam automaticamente.</small></div></div></div>
+        <div class="game-choice-grid">
+          ${Object.values(GAME_PROFILES).map((profile) => gameChoice(profile, wizard.gameProfile)).join('')}
+        </div>
+        <div class="profile-preview game-${selectedProfile.id}">
+          <span class="profile-preview-icon">${selectedProfile.icon}</span>
+          <div><strong>${selectedProfile.label}</strong><span>${selectedProfile.description}</span></div>
+          <div class="profile-tags"><b>${selectedProfile.scoreLabel}</b><b>${selectedProfile.choicePlural}</b><b>MVP</b></div>
+        </div>
+      </section>
+      <section class="game-profile-section">
+        <div class="section-title-line"><div><span>02</span><div><strong>Formato da competição</strong><small>Você poderá combinar liga e mata-mata.</small></div></div></div>
+        <div class="choice-grid">
+          ${formatChoice('league','Liga','Todos enfrentam todos. A classificação final define o campeão.',wizard.format)}
+          ${formatChoice('knockout','Mata-mata','Confrontos eliminatórios com folgas corretas quando necessário.',wizard.format)}
+          ${formatChoice('mixed','Liga + mata-mata','A liga classifica e depois gera uma chave eliminatória.',wizard.format)}
+        </div>
+      </section>
+      <label class="field"><span>Disputa</span><select id="wizardMode"><option value="individual" ${wizard.mode === 'individual' ? 'selected' : ''}>Individual</option><option value="teams" ${wizard.mode === 'teams' ? 'selected' : ''}>Por equipes</option></select></label>
     </div>`;
 }
 
 function formatChoice(value, title, description, selected) {
   return `<label class="choice-card ${selected === value ? 'selected' : ''}" data-format-choice="${value}"><input type="radio" name="format" value="${value}" ${selected === value ? 'checked' : ''}><strong>${title}</strong><span>${description}</span></label>`;
+}
+
+function gameChoice(profile, selected) {
+  return `<button type="button" class="game-choice game-${profile.id} ${selected === profile.id ? 'selected' : ''}" data-game-choice="${profile.id}">
+    <span class="game-choice-icon">${profile.icon}</span>
+    <span class="game-choice-copy"><strong>${profile.label}</strong><small>${profile.description}</small></span>
+    <span class="game-choice-check">✓</span>
+  </button>`;
 }
 
 function wizardParticipantsHtml(wizard) {
@@ -423,44 +531,110 @@ function teamWizardHtml(team, index) {
 
 function wizardRulesHtml(wizard) {
   const participantCount = wizard.mode === 'individual' ? wizard.entrants.length : wizard.teams.length;
-  return `<h3>Regras e classificação</h3><p>Configure quantas partidas serão disputadas e, no formato misto, quantos participantes avançam ao mata-mata.</p>
+  const fullCounts = fullBracketCounts(participantCount);
+  if (wizard.format === 'mixed') {
+    wizard.qualifiers = Math.min(Math.max(2, Number(wizard.qualifiers) || 2), participantCount);
+    if (wizard.bracketMode === 'complete' && !fullCounts.includes(wizard.qualifiers)) {
+      wizard.qualifiers = fullCounts[fullCounts.length - 1] || 2;
+    }
+  }
+  const plan = getBracketPlan(wizard.format === 'mixed' ? wizard.qualifiers : participantCount);
+  return `<h3>Regras e montagem da chave</h3><p>Defina a liga e, no formato misto, como os classificados serão colocados no mata-mata.</p>
     <div class="stack">
       ${wizard.format !== 'knockout' ? `<div class="grid cols-3">
         <label class="field"><span>Turnos da liga</span><select id="wizardLeagueLegs"><option value="1" ${wizard.leagueLegs === 1 ? 'selected' : ''}>Turno único</option><option value="2" ${wizard.leagueLegs === 2 ? 'selected' : ''}>Ida e volta</option></select></label>
         <label class="field"><span>Pontos por vitória</span><input id="wizardPointsWin" type="number" min="1" value="${wizard.pointsWin}"></label>
         <label class="field"><span>Pontos por empate</span><input id="wizardPointsDraw" type="number" min="0" value="${wizard.pointsDraw}"></label>
       </div>` : ''}
-      ${wizard.format === 'mixed' ? `<div class="panel"><div class="panel-head"><div><h3>Classificados para o mata-mata</h3><p>Você pode usar 8, 16 ou qualquer outra quantidade entre 2 e ${participantCount}.</p></div></div><div class="panel-body stack">
-        <div class="quick-counts">${[2,4,8,16].filter((value) => value <= participantCount).map((value) => `<button type="button" class="${wizard.qualifiers === value ? 'active' : ''}" data-qualifier-quick="${value}">${value}</button>`).join('')}</div>
-        <label class="field"><span>Quantidade exata de classificados</span><input id="wizardQualifiers" type="number" min="2" max="${participantCount}" value="${Math.min(wizard.qualifiers, participantCount)}"><small>Se a quantidade não fechar uma chave exata, o sistema cria rodada preliminar e folgas automaticamente.</small></label>
-      </div></div>` : ''}
+      ${wizard.format === 'mixed' ? `<section class="rule-section">
+        <div class="rule-section-head"><div><span class="section-number">01</span><div><h3>Como montar os confrontos</h3><p>Escolha se a liga define apenas os classificados ou também define a posição deles na chave.</p></div></div></div>
+        <div class="choice-grid pairing-grid">
+          ${ruleChoice('knockout-pairing','draw','Sorteio livre','Os classificados são embaralhados novamente. Qualquer jogador pode enfrentar qualquer outro.',wizard.knockoutPairing,'⇄')}
+          ${ruleChoice('knockout-pairing','seeded','Melhor contra pior','1º enfrenta o último classificado, 2º enfrenta o penúltimo e assim por diante.',wizard.knockoutPairing,'1×N')}
+        </div>
+      </section>
+      <section class="rule-section">
+        <div class="rule-section-head"><div><span class="section-number">02</span><div><h3>Tamanho da chave</h3><p>Escolha uma chave fechada ou permita quantidades adaptadas com folgas explícitas.</p></div></div></div>
+        <div class="choice-grid pairing-grid">
+          ${ruleChoice('bracket-mode','complete','Chave completa','Aceita somente 2, 4, 8, 16... classificados. Ninguém recebe folga.',wizard.bracketMode,'◆')}
+          ${ruleChoice('bracket-mode','flexible','Chave adaptada','Aceita 3, 5, 6, 7... O sistema mostra quem recebe folga e quem joga a preliminar.',wizard.bracketMode,'◇')}
+        </div>
+        <div class="qualifier-config">
+          <div class="quick-counts">${(wizard.bracketMode === 'complete' ? fullCounts : [2,4,6,8,16].filter((value) => value <= participantCount)).map((value) => `<button type="button" class="${wizard.qualifiers === value ? 'active' : ''}" data-qualifier-quick="${value}">${value}</button>`).join('')}</div>
+          <label class="field"><span>Quantidade de classificados</span>${wizard.bracketMode === 'complete'
+            ? `<select id="wizardQualifiers">${fullCounts.map((value) => `<option value="${value}" ${wizard.qualifiers === value ? 'selected' : ''}>${value} classificados</option>`).join('')}</select>`
+            : `<input id="wizardQualifiers" type="number" min="2" max="${participantCount}" value="${wizard.qualifiers}">`}<small>${wizard.bracketMode === 'complete' ? 'Com 7 participantes, por exemplo, a maior chave completa possível é de 4 classificados.' : 'Uma quantidade ímpar é possível, mas alguém recebe folga. Isso ficará visível na chave.'}</small></label>
+        </div>
+        ${bracketPlanHtml(plan, wizard.knockoutPairing)}
+      </section>` : `${wizard.format === 'knockout' ? bracketPlanHtml(plan, 'draw') : ''}`}
       ${wizard.format !== 'league' ? `<label class="check-row"><input id="wizardThirdPlace" type="checkbox" ${wizard.thirdPlace ? 'checked' : ''}> Criar disputa de terceiro lugar</label>` : ''}
-      <div class="notice info">Desempates da liga: pontos, vitórias, saldo de pontos/gols, pontos/gols marcados e ordem alfabética.</div>
+      <div class="notice info">Desempates da liga: pontos, vitórias, saldo, pontos/gols marcados e ordem alfabética.</div>
     </div>`;
 }
 
+function ruleChoice(group, value, title, description, selected, symbol) {
+  return `<label class="choice-card rule-choice ${selected === value ? 'selected' : ''}" data-rule-choice="${group}:${value}"><input type="radio" name="${group}" value="${value}" ${selected === value ? 'checked' : ''}><span class="choice-symbol">${symbol}</span><strong>${title}</strong><span>${description}</span></label>`;
+}
+
+function bracketPlanHtml(plan, pairing) {
+  if (!plan || plan.total < 2) return '';
+  const pairingCopy = pairing === 'seeded'
+    ? 'As folgas ficam com os melhores colocados; os demais cruzam melhor contra pior.'
+    : 'As folgas e os confrontos são definidos pelo sorteio.';
+  if (!plan.preliminaryMatches) {
+    return `<div class="bracket-plan clean"><div class="plan-icon">✓</div><div><strong>Chave completa de ${plan.total}</strong><span>${knockoutRoundName(plan.total)} sem rodada preliminar e sem folgas.</span></div></div>`;
+  }
+  return `<div class="bracket-plan"><div class="plan-icon">${plan.total}</div><div><strong>Como ${plan.total} classificados serão organizados</strong><span>${plan.preliminaryMatches} confronto(s) preliminar(es), ${plan.byes} folga(s) e ${plan.nextRoundSize} participantes na fase seguinte. ${pairingCopy}</span></div></div>`;
+}
 function wizardReviewHtml(wizard) {
   const participants = wizard.mode === 'individual' ? wizard.entrants : wizard.teams;
   const estimatedLeague = wizard.format === 'knockout' ? 0 : (participants.length * (participants.length - 1) / 2) * wizard.leagueLegs;
-  return `<h3>Revisar e sortear</h3><p>Ao confirmar, o sistema criará a tabela da liga ou a primeira fase do mata-mata com confrontos sorteados.</p>
+  const knockoutTotal = wizard.format === 'mixed' ? wizard.qualifiers : participants.length;
+  const plan = wizard.format === 'league' ? null : getBracketPlan(knockoutTotal);
+  const profile = getGameProfile(wizard.gameProfile);
+  return `<h3>Revisar estrutura</h3><p>Confira o formato antes de criar. O sistema usará o perfil ${profile.label} em todos os jogos e estatísticas.</p>
     <div class="stack">
-      <div class="panel"><div class="panel-body"><table class="stats-table"><tbody>
-        <tr><td>Campeonato</td><td class="num"><strong>${escapeHtml(wizard.name)}</strong></td></tr>
-        <tr><td>Jogo</td><td class="num">${escapeHtml(wizard.game || 'Não informado')}</td></tr>
-        <tr><td>Formato</td><td class="num">${formatLabel(wizard.format)}</td></tr>
-        <tr><td>Modo</td><td class="num">${modeLabel(wizard.mode)}</td></tr>
-        <tr><td>Participantes</td><td class="num">${participants.length}</td></tr>
-        ${wizard.format !== 'knockout' ? `<tr><td>Jogos previstos na liga</td><td class="num">${estimatedLeague}</td></tr>` : ''}
-        ${wizard.format === 'mixed' ? `<tr><td>Classificados</td><td class="num">${wizard.qualifiers}</td></tr>` : ''}
-      </tbody></table></div></div>
-      <div class="notice warning">O sorteio poderá ser refeito enquanto nenhum resultado tiver sido registrado.</div>
+      <div class="review-hero game-${profile.id}">
+        <div><span>${profile.icon} ${escapeHtml(profile.label)}</span><h3>${escapeHtml(wizard.name)}</h3></div>
+        <strong>${formatLabel(wizard.format)}</strong>
+      </div>
+      <div class="review-grid">
+        <div class="review-stat"><span>Participantes</span><strong>${participants.length}</strong></div>
+        ${wizard.format !== 'knockout' ? `<div class="review-stat"><span>Jogos da liga</span><strong>${estimatedLeague}</strong></div>` : ''}
+        ${wizard.format === 'mixed' ? `<div class="review-stat"><span>Classificados</span><strong>${wizard.qualifiers}</strong></div>` : ''}
+        ${plan ? `<div class="review-stat"><span>Folgas iniciais</span><strong>${plan.byes}</strong></div>` : ''}
+      </div>
+      <div class="profile-review-strip game-${profile.id}"><div><span>PLACAR</span><strong>${profile.scoreLabel}</strong></div><div><span>ESCOLHA</span><strong>${profile.choiceLabel}</strong></div><div><span>ESTATÍSTICAS</span><strong>${profile.id === 'lol' ? 'K/D/A e KDA' : profile.id === 'fifa' ? 'Gols e times' : 'Pontos e finalizações'}</strong></div></div>
+      ${wizard.format === 'mixed' ? `<div class="panel"><div class="panel-body"><table class="stats-table"><tbody>
+        <tr><td>Cruzamento do mata-mata</td><td class="num"><strong>${wizard.knockoutPairing === 'seeded' ? 'Melhor contra pior' : 'Sorteio livre'}</strong></td></tr>
+        <tr><td>Estrutura da chave</td><td class="num">${wizard.bracketMode === 'complete' ? 'Completa, sem folgas' : 'Adaptada, com folgas quando necessário'}</td></tr>
+        <tr><td>Primeira fase eliminatória</td><td class="num">${plan.preliminaryMatches ? `${plan.preliminaryMatches} jogo(s) preliminar(es) + ${plan.byes} folga(s)` : knockoutRoundName(plan.total)}</td></tr>
+      </tbody></table></div></div>` : ''}
+      <div class="notice warning">O sorteio da fase inicial poderá ser refeito enquanto nenhum resultado tiver sido registrado.</div>
     </div>`;
 }
 
 function bindWizardStepEvents() {
   const wizard = state.wizard;
+  $$('[data-game-choice]').forEach((choice) => choice.addEventListener('click', () => {
+    wizard.gameProfile = choice.dataset.gameChoice;
+    renderWizard();
+  }));
   $$('[data-format-choice]').forEach((choice) => choice.addEventListener('click', () => {
     wizard.format = choice.dataset.formatChoice;
+    renderWizard();
+  }));
+  $$('[data-rule-choice]').forEach((choice) => choice.addEventListener('click', () => {
+    const [group, value] = choice.dataset.ruleChoice.split(':');
+    if (group === 'knockout-pairing') wizard.knockoutPairing = value;
+    if (group === 'bracket-mode') {
+      wizard.bracketMode = value;
+      const total = wizard.mode === 'individual' ? wizard.entrants.length : wizard.teams.length;
+      if (value === 'complete' && !isPowerOfTwo(wizard.qualifiers)) {
+        const options = fullBracketCounts(total);
+        wizard.qualifiers = options[options.length - 1] || 2;
+      }
+    }
     renderWizard();
   }));
 
@@ -503,6 +677,10 @@ function bindWizardStepEvents() {
     wizard.qualifiers = Number(button.dataset.qualifierQuick);
     renderWizard();
   }));
+  $('#wizardQualifiers')?.addEventListener('change', () => {
+    wizard.qualifiers = Number($('#wizardQualifiers').value);
+    renderWizard();
+  });
 }
 
 function addEntrantFromInput() {
@@ -528,9 +706,7 @@ function addMemberFromInput(teamId) {
 function captureWizardFields() {
   const wizard = state.wizard;
   if ($('#wizardName')) wizard.name = $('#wizardName').value.trim();
-  if ($('#wizardGame')) wizard.game = $('#wizardGame').value.trim();
   if ($('#wizardMode')) wizard.mode = $('#wizardMode').value;
-  if ($('#wizardExtraLabel')) wizard.extraLabel = $('#wizardExtraLabel').value.trim() || 'Escolha usada';
   if ($('#wizardLeagueLegs')) wizard.leagueLegs = Number($('#wizardLeagueLegs').value);
   if ($('#wizardPointsWin')) wizard.pointsWin = Math.max(1, Number($('#wizardPointsWin').value) || 3);
   if ($('#wizardPointsDraw')) wizard.pointsDraw = Math.max(0, Number($('#wizardPointsDraw').value) || 0);
@@ -542,49 +718,58 @@ function validateWizardStep(step) {
   const wizard = state.wizard;
   if (step === 1) {
     if (!wizard.name) return 'Informe o nome do campeonato.';
+    if (!GAME_PROFILES[wizard.gameProfile]) return 'Escolha FIFA, League of Legends ou Beyblade.';
     if (!['league','knockout','mixed'].includes(wizard.format)) return 'Escolha um formato válido.';
   }
   if (step === 2) {
     if (wizard.mode === 'individual') {
       wizard.entrants = wizard.entrants.map((item) => ({ ...item, name: item.name.trim() })).filter((item) => item.name);
       if (wizard.entrants.length < 2) return 'Adicione pelo menos dois jogadores.';
+      if (wizard.entrants.length > 30) return 'Esta versão aceita até 30 jogadores por campeonato.';
     } else {
       wizard.teams = wizard.teams.map((team) => ({ ...team, name: team.name.trim(), members: team.members.filter((member) => member.name.trim()) })).filter((team) => team.name);
       if (wizard.teams.length < 2) return 'Adicione pelo menos duas equipes.';
+      if (wizard.teams.length > 30) return 'Esta versão aceita até 30 equipes por campeonato.';
       if (wizard.teams.some((team) => !team.members.length)) return 'Cada equipe precisa ter pelo menos um jogador.';
     }
   }
   if (step === 3 && wizard.format === 'mixed') {
     const total = wizard.mode === 'individual' ? wizard.entrants.length : wizard.teams.length;
     if (!Number.isInteger(wizard.qualifiers) || wizard.qualifiers < 2 || wizard.qualifiers > total) return `A quantidade de classificados deve ficar entre 2 e ${total}.`;
+    if (wizard.bracketMode === 'complete' && !isPowerOfTwo(wizard.qualifiers)) return 'Na chave completa, escolha 2, 4, 8, 16... classificados. Para outra quantidade, use Chave adaptada.';
+    if (!['draw','seeded'].includes(wizard.knockoutPairing)) return 'Escolha como os confrontos do mata-mata serão montados.';
   }
   return '';
 }
 
 function buildTournamentFromWizard() {
   const wizard = state.wizard;
+  const profile = getGameProfile(wizard.gameProfile);
   const participants = wizard.mode === 'individual'
     ? wizard.entrants.map((entrant) => ({ id: uid(), name: entrant.name, players: [{ id: uid(), name: entrant.name }] }))
     : wizard.teams.map((team) => ({ id: uid(), name: team.name, players: team.members.map((member) => ({ id: uid(), name: member.name })) }));
 
   const tournament = {
     id: uid(),
-    version: 4,
+    version: 6,
     name: wizard.name,
-    game: wizard.game,
+    gameProfile: profile.id,
+    game: profile.label,
     format: wizard.format,
     mode: wizard.mode,
-    extraLabel: wizard.extraLabel,
+    extraLabel: profile.choiceLabel,
     participants,
     settings: {
       leagueLegs: wizard.leagueLegs,
       pointsWin: wizard.pointsWin,
-      pointsDraw: wizard.pointsDraw,
+      pointsDraw: profile.drawAllowed ? wizard.pointsDraw : 0,
       qualifiers: wizard.format === 'mixed' ? wizard.qualifiers : null,
+      knockoutPairing: wizard.format === 'mixed' ? wizard.knockoutPairing : 'draw',
+      bracketMode: wizard.format === 'mixed' ? wizard.bracketMode : 'flexible',
       thirdPlace: wizard.thirdPlace
     },
     matches: [],
-    knockoutState: { started: wizard.format === 'knockout', currentRound: 0, pendingByes: [], seeded: false },
+    knockoutState: { started: wizard.format === 'knockout', currentRound: 0, pendingByes: [], initialByes: [], pairing: wizard.format === 'mixed' ? wizard.knockoutPairing : 'draw', seeded: wizard.format === 'mixed' && wizard.knockoutPairing === 'seeded' },
     championId: null,
     status: 'active',
     createdAt: now(),
@@ -595,7 +780,7 @@ function buildTournamentFromWizard() {
   if (wizard.format === 'league' || wizard.format === 'mixed') {
     tournament.matches = createRoundRobin(shuffle(ids), wizard.leagueLegs, tournament);
   } else {
-    beginKnockout(tournament, shuffle(ids), false);
+    beginKnockout(tournament, shuffle(ids), 'draw');
   }
   return tournament;
 }
@@ -627,6 +812,11 @@ function createMatch(tournament, data) {
     isBye: false,
     homeChoice: '',
     awayChoice: '',
+    homeDeaths: 0,
+    awayDeaths: 0,
+    homeAssists: 0,
+    awayAssists: 0,
+    finishType: '',
     mvpPlayerId: '',
     notes: '',
     homeLineup: home?.players.map((player) => player.id) || [],
@@ -670,6 +860,25 @@ function highestPowerOfTwoAtMost(value) {
   return 2 ** Math.floor(Math.log2(value));
 }
 
+function isPowerOfTwo(value) {
+  return Number.isInteger(value) && value >= 2 && (value & (value - 1)) === 0;
+}
+
+function fullBracketCounts(maximum) {
+  const result = [];
+  for (let value = 2; value <= maximum; value *= 2) result.push(value);
+  return result;
+}
+
+function getBracketPlan(total) {
+  const n = Number(total) || 0;
+  if (n < 2) return { total: n, preliminaryMatches: 0, byes: 0, nextRoundSize: 0 };
+  const base = highestPowerOfTwoAtMost(n);
+  const preliminaryMatches = n - base;
+  const byes = preliminaryMatches ? n - (preliminaryMatches * 2) : 0;
+  return { total: n, preliminaryMatches, byes, nextRoundSize: base };
+}
+
 function knockoutRoundName(size) {
   if (size === 2) return 'Final';
   if (size === 4) return 'Semifinais';
@@ -691,34 +900,46 @@ function pairSequential(ids) {
   return pairs;
 }
 
-function beginKnockout(tournament, orderedIds, seeded) {
+function interleaveByesAndWinners(byes, roundWinners) {
+  const result = [];
+  const winners = [...roundWinners];
+  for (const bye of byes) {
+    result.push(bye);
+    if (winners.length) result.push(winners.shift());
+  }
+  result.push(...winners);
+  return result;
+}
+
+function beginKnockout(tournament, orderedIds, pairingMode = 'draw') {
+  const pairing = pairingMode === true ? 'seeded' : pairingMode === false ? 'draw' : pairingMode;
+  const seeded = pairing === 'seeded';
   const ids = [...orderedIds];
   const n = ids.length;
   if (n < 2) throw new Error('O mata-mata precisa de pelo menos dois participantes.');
-  const base = highestPowerOfTwoAtMost(n);
-  const preliminaryMatches = n - base;
-  tournament.knockoutState = { started: true, currentRound: 1, pendingByes: [], seeded };
+  const plan = getBracketPlan(n);
+  tournament.knockoutState = { started: true, currentRound: 1, pendingByes: [], initialByes: [], pairing, seeded };
 
   let playIds = ids;
   let roundName = knockoutRoundName(n);
-  if (preliminaryMatches > 0) {
-    const playCount = preliminaryMatches * 2;
+  if (plan.preliminaryMatches > 0) {
+    const playCount = plan.preliminaryMatches * 2;
     if (seeded) {
-      tournament.knockoutState.pendingByes = ids.slice(0, n - playCount);
-      playIds = ids.slice(n - playCount);
+      tournament.knockoutState.pendingByes = ids.slice(0, plan.byes);
+      playIds = ids.slice(plan.byes);
     } else {
       playIds = ids.slice(0, playCount);
       tournament.knockoutState.pendingByes = ids.slice(playCount);
     }
     roundName = 'Rodada preliminar';
   }
+  tournament.knockoutState.initialByes = [...tournament.knockoutState.pendingByes];
 
   const pairs = seeded ? pairOuter(playIds) : pairSequential(playIds);
   tournament.matches.push(...pairs.map(([homeId, awayId]) => createMatch(tournament, {
     stage: 'knockout', round: 1, bracketRound: 1, roundName, homeId, awayId
   })));
 }
-
 function leagueMatches(tournament) {
   return tournament.matches.filter((match) => match.stage === 'league');
 }
@@ -736,14 +957,15 @@ function standings(tournament) {
     const home = rows[match.homeId];
     const away = rows[match.awayId];
     if (!home || !away) continue;
-    const homeScore = Number(match.homeScore);
-    const awayScore = Number(match.awayScore);
+    const homeScore = Number(match.homeScore || 0);
+    const awayScore = Number(match.awayScore || 0);
+    const winner = matchWinner(match);
     home.pj += 1; away.pj += 1;
     home.gp += homeScore; home.gc += awayScore;
     away.gp += awayScore; away.gc += homeScore;
-    if (homeScore > awayScore) {
+    if (winner === home.id) {
       home.v += 1; away.d += 1; home.pts += tournament.settings.pointsWin;
-    } else if (awayScore > homeScore) {
+    } else if (winner === away.id) {
       away.v += 1; home.d += 1; away.pts += tournament.settings.pointsWin;
     } else {
       home.e += 1; away.e += 1;
@@ -783,7 +1005,10 @@ function advanceKnockout(tournament) {
 
   let winners = current.map(matchWinner).filter(Boolean);
   if (tournament.knockoutState.pendingByes?.length) {
-    winners = [...tournament.knockoutState.pendingByes, ...winners];
+    const byes = [...tournament.knockoutState.pendingByes];
+    winners = tournament.knockoutState.pairing === 'seeded'
+      ? [...byes, ...winners]
+      : interleaveByesAndWinners(byes, winners);
     tournament.knockoutState.pendingByes = [];
   }
 
@@ -793,7 +1018,7 @@ function advanceKnockout(tournament) {
   }
 
   const nextRound = round + 1;
-  const pairs = tournament.knockoutState.seeded ? pairOuter(winners) : pairSequential(winners);
+  const pairs = tournament.knockoutState.pairing === 'seeded' ? pairOuter(winners) : pairSequential(winners);
   const nextName = knockoutRoundName(winners.length);
   tournament.matches.push(...pairs.map(([homeId, awayId]) => createMatch(tournament, {
     stage: 'knockout', round: nextRound, bracketRound: nextRound, roundName: nextName, homeId, awayId
@@ -817,7 +1042,17 @@ function generateMixedKnockout(tournament) {
   if (tournament.knockoutState.started) throw new Error('O mata-mata já foi gerado.');
   if (!allLeagueMatchesPlayed(tournament)) throw new Error('Registre todos os jogos da liga antes de gerar o mata-mata.');
   const qualified = standings(tournament).slice(0, tournament.settings.qualifiers).map((row) => row.id);
-  beginKnockout(tournament, qualified, true);
+  const pairing = tournament.settings.knockoutPairing || 'draw';
+  beginKnockout(tournament, pairing === 'draw' ? shuffle(qualified) : qualified, pairing);
+}
+
+function rerollMixedKnockout(tournament) {
+  if (tournament.format !== 'mixed' || !tournament.knockoutState.started) throw new Error('O mata-mata ainda não foi gerado.');
+  if (knockoutMatches(tournament).some((match) => match.played)) throw new Error('Não é possível refazer a chave depois de registrar um resultado do mata-mata.');
+  tournament.matches = tournament.matches.filter((match) => match.stage === 'league');
+  tournament.knockoutState = { started: false, currentRound: 0, pendingByes: [], initialByes: [], pairing: tournament.settings.knockoutPairing || 'draw', seeded: tournament.settings.knockoutPairing === 'seeded' };
+  tournament.championId = null;
+  generateMixedKnockout(tournament);
 }
 
 function rerollTournament(tournament) {
@@ -825,10 +1060,10 @@ function rerollTournament(tournament) {
   tournament.championId = null;
   if (tournament.format === 'league' || tournament.format === 'mixed') {
     tournament.matches = createRoundRobin(shuffle(tournament.participants.map((item) => item.id)), tournament.settings.leagueLegs, tournament);
-    tournament.knockoutState = { started: false, currentRound: 0, pendingByes: [], seeded: false };
+    tournament.knockoutState = { started: false, currentRound: 0, pendingByes: [], initialByes: [], pairing: tournament.settings.knockoutPairing || 'draw', seeded: tournament.settings.knockoutPairing === 'seeded' };
   } else {
     tournament.matches = [];
-    beginKnockout(tournament, shuffle(tournament.participants.map((item) => item.id)), false);
+    beginKnockout(tournament, shuffle(tournament.participants.map((item) => item.id)), 'draw');
   }
 }
 
@@ -837,41 +1072,52 @@ function renderTournamentDetail() {
   if (!tournament) { state.activeTournamentId = null; renderTournamentsView(); return; }
   updateLeagueChampion(tournament);
   updateTournamentStatus(tournament);
+  const profile = getGameProfile(tournament);
 
   $('#view-tournaments').innerHTML = `
+    <div class="tournament-detail-shell ${gameProfileClass(tournament)}">
     <div class="detail-head">
-      <div>
+      <div class="detail-game-mark"><span>${profile.icon}</span><b>${profile.short}</b></div>
+      <div class="detail-title-copy">
         <button class="button small ghost" data-back-list>← Voltar aos campeonatos</button>
+        <div class="game-kicker">${escapeHtml(profile.label)} · ${formatLabel(tournament.format)}</div>
         <h2>${escapeHtml(tournament.name)}</h2>
-        <div class="detail-meta"><span class="format-badge">${escapeHtml(tournament.game || 'Jogo não informado')}</span><span class="format-badge">${formatLabel(tournament.format)}</span><span class="format-badge">${modeLabel(tournament.mode)}</span><span class="format-badge">${tournament.participants.length} participantes</span></div>
+        <div class="detail-meta"><span class="format-badge">${modeLabel(tournament.mode)}</span><span class="format-badge">${tournament.participants.length} participantes</span><span class="format-badge">${playedMatches(tournament)}/${playableMatches(tournament)} jogos</span></div>
       </div>
       <div class="detail-actions">
         ${playedMatches(tournament) === 0 ? '<button class="button secondary" data-reroll>Sortear novamente</button>' : ''}
+        ${tournament.format === 'mixed' && tournament.knockoutState.started && !knockoutMatches(tournament).some((match) => match.played) && tournament.settings.knockoutPairing === 'draw' ? '<button class="button secondary" data-reroll-knockout>Refazer sorteio do mata-mata</button>' : ''}
         <button class="button danger" data-delete-tournament>Excluir</button>
       </div>
     </div>
-    ${tournament.championId ? `<div class="champion-banner"><div><span>CAMPEÃO DO CAMPEONATO</span><strong>${escapeHtml(participantName(tournament,tournament.championId))}</strong></div><span>${formatLabel(tournament.format)}</span></div>` : ''}
+    ${tournament.championId ? `<div class="champion-banner"><div><span>CAMPEÃO DO CAMPEONATO</span><strong>${escapeHtml(participantName(tournament,tournament.championId))}</strong></div><span>${profile.icon} ${profile.label}</span></div>` : ''}
     <div class="detail-grid">
       <aside class="panel detail-menu">
-        ${detailTabButton('matches','Jogos')}
         ${tournament.format !== 'knockout' ? detailTabButton('standings','Classificação') : ''}
         ${tournament.format !== 'league' ? detailTabButton('bracket','Mata-mata') : ''}
-        ${detailTabButton('participants','Participantes e estatísticas')}
+        ${detailTabButton('matches','Partidas')}
+        ${detailTabButton('statistics','Estatísticas')}
         ${detailTabButton('settings','Configuração')}
       </aside>
       <div class="detail-content">${detailTabHtml(tournament)}</div>
+    </div>
     </div>`;
 
   $('[data-back-list]').addEventListener('click', () => { state.activeTournamentId = null; renderTournamentsView(); });
   $$('[data-detail-tab]').forEach((button) => button.addEventListener('click', () => { state.detailTab = button.dataset.detailTab; renderTournamentDetail(); }));
   $$('[data-edit-match]').forEach((button) => button.addEventListener('click', () => openMatchModal(tournament.id, button.dataset.editMatch)));
   $('[data-generate-knockout]')?.addEventListener('click', async () => {
-    try { generateMixedKnockout(tournament); await persistTournament(tournament); renderTournamentDetail(); toast('Mata-mata gerado com os classificados.', 'success'); }
+    try { generateMixedKnockout(tournament); await persistTournament(tournament); state.detailTab = 'bracket'; renderTournamentDetail(); toast('Mata-mata gerado com os classificados.', 'success'); }
     catch (error) { toast(error.message, 'error'); }
   });
   $('[data-reroll]')?.addEventListener('click', async () => {
     if (!confirm('Sortear novamente todos os confrontos?')) return;
     try { rerollTournament(tournament); await persistTournament(tournament); renderTournamentDetail(); toast('Novo sorteio realizado.', 'success'); }
+    catch (error) { toast(error.message, 'error'); }
+  });
+  $('[data-reroll-knockout]')?.addEventListener('click', async () => {
+    if (!confirm('Refazer somente o sorteio do mata-mata? Os resultados da liga serão mantidos.')) return;
+    try { rerollMixedKnockout(tournament); await persistTournament(tournament); renderTournamentDetail(); toast('Mata-mata sorteado novamente.', 'success'); }
     catch (error) { toast(error.message, 'error'); }
   });
   $('[data-delete-tournament]').addEventListener('click', async () => {
@@ -888,7 +1134,7 @@ function detailTabButton(tab, label) {
 function detailTabHtml(tournament) {
   if (state.detailTab === 'standings') return standingsTabHtml(tournament);
   if (state.detailTab === 'bracket') return bracketTabHtml(tournament);
-  if (state.detailTab === 'participants') return participantsTabHtml(tournament);
+  if (state.detailTab === 'statistics' || state.detailTab === 'participants') return statisticsTabHtml(tournament);
   if (state.detailTab === 'settings') return settingsTabHtml(tournament);
   return matchesTabHtml(tournament);
 }
@@ -897,7 +1143,7 @@ function matchesTabHtml(tournament) {
   const groups = groupMatchesForDisplay(tournament.matches);
   const leagueDone = tournament.format === 'mixed' && allLeagueMatchesPlayed(tournament) && !tournament.knockoutState.started;
   return `<div class="stack">
-    ${tournament.format === 'mixed' && !tournament.knockoutState.started ? `<div class="notice ${leagueDone ? 'success' : 'info'}">${leagueDone ? `Liga concluída. Os ${tournament.settings.qualifiers} primeiros estão prontos para o mata-mata.` : `Fase classificatória em andamento. Os ${tournament.settings.qualifiers} primeiros avançam.`}${leagueDone ? ' <button class="button small primary" data-generate-knockout style="margin-left:10px">Gerar mata-mata</button>' : ''}</div>` : ''}
+    ${tournament.format === 'mixed' && !tournament.knockoutState.started ? `<div class="notice ${leagueDone ? 'success' : 'info'}">${leagueDone ? `Liga concluída. Os ${tournament.settings.qualifiers} primeiros estão prontos para o mata-mata por ${tournament.settings.knockoutPairing === 'seeded' ? 'melhor contra pior' : 'sorteio livre'}.` : `Fase classificatória em andamento. Os ${tournament.settings.qualifiers} primeiros avançam.`}${leagueDone ? ' <button class="button small primary" data-generate-knockout style="margin-left:10px">Gerar mata-mata</button>' : ''}</div>` : ''}
     ${groups.map(({ key, label, matches }) => `<section class="round-section"><div class="round-head"><strong>${escapeHtml(label)}</strong><span>${matches.filter((match) => match.played).length}/${matches.length} registrados</span></div>${matches.map((match,index) => matchRowHtml(tournament,match,index)).join('')}</section>`).join('') || '<div class="notice">Nenhum jogo criado.</div>'}
   </div>`;
 }
@@ -916,13 +1162,14 @@ function groupMatchesForDisplay(matches) {
 function matchRowHtml(tournament, match, index) {
   const home = participantName(tournament, match.homeId);
   const away = participantName(tournament, match.awayId);
+  const profile = getGameProfile(tournament);
   return `<div class="match-row ${match.played ? 'played' : ''} ${match.isBye ? 'bye' : ''}">
     <div class="match-code">J${String(index + 1).padStart(2,'0')}</div>
-    <div class="match-side">${escapeHtml(home)}</div>
-    <div class="match-score">${match.played ? match.homeScore : '—'}</div>
+    <div class="match-side"><strong>${escapeHtml(home)}</strong>${match.homeChoice ? `<small>${escapeHtml(match.homeChoice)}</small>` : ''}</div>
+    <div class="match-score"><span>${match.played ? match.homeScore : '—'}</span><small>${profile.scoreShort}</small></div>
     <div class="match-vs">×</div>
-    <div class="match-score">${match.played ? match.awayScore : '—'}</div>
-    <div class="match-side away">${escapeHtml(away)}</div>
+    <div class="match-score"><span>${match.played ? match.awayScore : '—'}</span><small>${profile.scoreShort}</small></div>
+    <div class="match-side away"><strong>${escapeHtml(away)}</strong>${match.awayChoice ? `<small>${escapeHtml(match.awayChoice)}</small>` : ''}</div>
     <div class="match-status"><button class="button small ${match.played ? 'secondary' : 'primary'}" data-edit-match="${match.id}">${match.played ? 'Editar' : 'Registrar'}</button></div>
   </div>`;
 }
@@ -930,73 +1177,234 @@ function matchRowHtml(tournament, match, index) {
 function standingsTabHtml(tournament) {
   const rows = standings(tournament);
   const qualifiers = tournament.format === 'mixed' ? tournament.settings.qualifiers : 0;
-  return `<div class="panel"><div class="panel-head"><div><h3>Classificação</h3><p>${tournament.format === 'mixed' ? `Os ${qualifiers} primeiros avançam ao mata-mata.` : 'Tabela completa da liga.'}</p></div></div><div class="table-wrap"><table class="stats-table"><thead><tr><th>#</th><th>Participante</th><th class="num">J</th><th class="num">V</th><th class="num">E</th><th class="num">D</th><th class="num">GP</th><th class="num">GC</th><th class="num">SG</th><th class="num">PTS</th></tr></thead><tbody>${rows.map((row,index) => `<tr class="${qualifiers && index < qualifiers ? 'qualified' : ''}"><td class="rank">${index + 1}</td><td><strong>${escapeHtml(participantName(tournament,row.id))}</strong></td><td class="num">${row.pj}</td><td class="num">${row.v}</td><td class="num">${row.e}</td><td class="num">${row.d}</td><td class="num">${row.gp}</td><td class="num">${row.gc}</td><td class="num">${row.sg}</td><td class="num"><strong>${row.pts}</strong></td></tr>`).join('')}</tbody></table></div></div>`;
+  const profile = getGameProfile(tournament);
+  return `<div class="panel standings-panel ${gameProfileClass(tournament)}"><div class="panel-head standings-title"><div><span class="panel-kicker">TABELA DA COMPETIÇÃO</span><h3>Classificação</h3><p>${tournament.format === 'mixed' ? `Os ${qualifiers} primeiros avançam ao mata-mata.` : 'Tabela completa da liga.'}</p></div><div class="legend"><span class="legend-qualified"></span> Zona de classificação</div></div><div class="table-wrap"><table class="stats-table standings-table"><thead><tr><th>#</th><th>Participante</th><th class="num">J</th><th class="num">V</th><th class="num">E</th><th class="num">D</th><th class="num">${profile.scoreShort}+</th><th class="num">${profile.scoreShort}-</th><th class="num">SALDO</th><th class="num">PTS</th></tr></thead><tbody>${rows.map((row,index) => `<tr class="${qualifiers && index < qualifiers ? 'qualified' : ''} ${qualifiers && index === qualifiers - 1 ? 'cut-line' : ''}"><td class="rank"><span>${index + 1}</span></td><td><strong>${escapeHtml(participantName(tournament,row.id))}</strong></td><td class="num">${row.pj}</td><td class="num win-cell">${row.v}</td><td class="num">${row.e}</td><td class="num loss-cell">${row.d}</td><td class="num">${row.gp}</td><td class="num">${row.gc}</td><td class="num">${row.sg}</td><td class="num points-cell"><strong>${row.pts}</strong></td></tr>`).join('')}</tbody></table></div></div>`;
 }
 
 function bracketTabHtml(tournament) {
   if (!tournament.knockoutState.started) {
-    return `<div class="panel empty-state"><div class="empty-state-inner"><div class="empty-symbol">◇</div><h2>Mata-mata ainda não gerado</h2><p>Finalize os jogos da liga. Depois, os ${tournament.settings.qualifiers} primeiros serão colocados na chave.</p>${allLeagueMatchesPlayed(tournament) ? '<button class="button primary" data-generate-knockout>Gerar mata-mata</button>' : ''}</div></div>`;
+    const pairingLabel = tournament.settings.knockoutPairing === 'seeded' ? 'melhor contra pior' : 'sorteio livre';
+    return `<div class="panel empty-state"><div class="empty-state-inner"><div class="empty-symbol">◇</div><h2>Mata-mata ainda não gerado</h2><p>Finalize a liga. Depois, os ${tournament.settings.qualifiers} primeiros entrarão na chave por ${pairingLabel}.</p>${allLeagueMatchesPlayed(tournament) ? '<button class="button primary" data-generate-knockout>Gerar mata-mata</button>' : ''}</div></div>`;
   }
   const rounds = [...new Set(knockoutMatches(tournament).map((match) => match.bracketRound))].sort((a,b) => a-b);
+  const initialByes = tournament.knockoutState.initialByes || [];
+  const pairingLabel = tournament.knockoutState.pairing === 'seeded' ? 'Melhor contra pior' : 'Sorteio livre';
   return `<div class="stack">
-    ${tournament.knockoutState.pendingByes?.length ? `<div class="notice info">${tournament.knockoutState.pendingByes.length} participante(s) avançam com folga após a rodada preliminar.</div>` : ''}
+    <div class="bracket-summary">
+      <div><span>MÉTODO DA CHAVE</span><strong>${pairingLabel}</strong></div>
+      <div><span>CLASSIFICADOS</span><strong>${tournament.format === 'mixed' ? tournament.settings.qualifiers : tournament.participants.length}</strong></div>
+      <div><span>FOLGAS INICIAIS</span><strong>${initialByes.length}</strong></div>
+    </div>
+    ${initialByes.length ? `<div class="bye-strip"><div><strong>Folgas da rodada preliminar</strong><span>Estes participantes já estão garantidos na fase seguinte.</span></div><div class="bye-list">${initialByes.map((id) => `<span class="bye-chip">${escapeHtml(participantName(tournament,id))}<b>FOLGA</b></span>`).join('')}</div></div>` : ''}
     <div class="bracket">${rounds.map((round) => {
       const matches = knockoutMatches(tournament).filter((match) => match.bracketRound === round);
-      return `<div class="bracket-column"><h4>${escapeHtml(matches[0]?.roundName || `Rodada ${round}`)}</h4>${matches.map((match) => bracketMatchHtml(tournament,match)).join('')}</div>`;
-    }).join('')}${tournament.matches.some((match) => match.stage === 'third') ? `<div class="bracket-column"><h4>3º lugar</h4>${tournament.matches.filter((match) => match.stage === 'third').map((match) => bracketMatchHtml(tournament,match)).join('')}</div>` : ''}</div>
+      return `<div class="bracket-column"><div class="bracket-round-title"><span>FASE ${String(round).padStart(2,'0')}</span><h4>${escapeHtml(matches[0]?.roundName || `Rodada ${round}`)}</h4></div>${matches.map((match) => bracketMatchHtml(tournament,match)).join('')}</div>`;
+    }).join('')}${tournament.matches.some((match) => match.stage === 'third') ? `<div class="bracket-column"><div class="bracket-round-title"><span>EXTRA</span><h4>3º lugar</h4></div>${tournament.matches.filter((match) => match.stage === 'third').map((match) => bracketMatchHtml(tournament,match)).join('')}</div>` : ''}</div>
   </div>`;
 }
-
 function bracketMatchHtml(tournament, match) {
   const winner = matchWinner(match);
+  const profile = getGameProfile(tournament);
   return `<button class="bracket-match" data-edit-match="${match.id}">
-    <div class="bracket-side ${winner === match.homeId ? 'winner' : ''}"><span>${escapeHtml(participantName(tournament,match.homeId))}</span><span>${match.played ? match.homeScore : '—'}</span></div>
-    <div class="bracket-side ${winner === match.awayId ? 'winner' : ''}"><span>${escapeHtml(participantName(tournament,match.awayId))}</span><span>${match.played ? match.awayScore : '—'}</span></div>
+    <div class="bracket-side ${winner === match.homeId ? 'winner' : ''}"><span><b>${escapeHtml(participantName(tournament,match.homeId))}</b>${match.homeChoice ? `<small>${escapeHtml(match.homeChoice)}</small>` : ''}</span><span>${match.played ? match.homeScore : '—'}<small>${profile.scoreShort}</small></span></div>
+    <div class="bracket-side ${winner === match.awayId ? 'winner' : ''}"><span><b>${escapeHtml(participantName(tournament,match.awayId))}</b>${match.awayChoice ? `<small>${escapeHtml(match.awayChoice)}</small>` : ''}</span><span>${match.played ? match.awayScore : '—'}<small>${profile.scoreShort}</small></span></div>
   </button>`;
 }
 
 function playerStats(tournament) {
+  const profile = getGameProfile(tournament);
   const rows = new Map();
   for (const participant of tournament.participants) {
-    for (const player of participant.players) rows.set(player.id, { id: player.id, name: player.name, team: participant.name, pj:0,v:0,e:0,d:0,gp:0,gc:0,sg:0,mvp:0 });
+    for (const player of participant.players) rows.set(player.id, { id: player.id, name: player.name, team: participant.name, pj:0,v:0,e:0,d:0,gp:0,gc:0,sg:0,mvp:0,kills:0,deaths:0,assists:0 });
   }
   for (const match of tournament.matches) {
     if (!match.played) continue;
-    const homeScore = Number(match.homeScore);
-    const awayScore = Number(match.awayScore);
-    const homeResult = homeScore > awayScore ? 'v' : homeScore < awayScore ? 'd' : 'e';
-    const awayResult = homeScore < awayScore ? 'v' : homeScore > awayScore ? 'd' : 'e';
+    const homeScore = Number(match.homeScore || 0);
+    const awayScore = Number(match.awayScore || 0);
+    const winner = matchWinner(match);
+    const homeResult = winner === match.homeId ? 'v' : winner === match.awayId ? 'd' : 'e';
+    const awayResult = winner === match.awayId ? 'v' : winner === match.homeId ? 'd' : 'e';
     for (const id of match.homeLineup || []) {
       const row = rows.get(id); if (!row) continue;
       row.pj += 1; row[homeResult] += 1; row.gp += homeScore; row.gc += awayScore;
+      if (profile.id === 'lol') { row.kills += homeScore; row.deaths += Number(match.homeDeaths || 0); row.assists += Number(match.homeAssists || 0); }
     }
     for (const id of match.awayLineup || []) {
       const row = rows.get(id); if (!row) continue;
       row.pj += 1; row[awayResult] += 1; row.gp += awayScore; row.gc += homeScore;
+      if (profile.id === 'lol') { row.kills += awayScore; row.deaths += Number(match.awayDeaths || 0); row.assists += Number(match.awayAssists || 0); }
     }
     if (match.mvpPlayerId && rows.has(match.mvpPlayerId)) rows.get(match.mvpPlayerId).mvp += 1;
   }
-  for (const row of rows.values()) row.sg = row.gp - row.gc;
-  return [...rows.values()].sort((a,b) => b.v-a.v || b.sg-a.sg || b.mvp-a.mvp || a.name.localeCompare(b.name));
+  for (const row of rows.values()) {
+    row.sg = row.gp - row.gc;
+    row.winRate = row.pj ? (row.v / row.pj) * 100 : 0;
+    row.kda = profile.id === 'lol' ? (row.kills + row.assists) / Math.max(1, row.deaths) : 0;
+  }
+  return [...rows.values()].sort((a,b) => b.v-a.v || b.winRate-a.winRate || b.gp-a.gp || b.mvp-a.mvp || a.name.localeCompare(b.name));
 }
 
-function participantsTabHtml(tournament) {
-  const stats = playerStats(tournament);
-  return `<div class="stack">
-    <div class="panel"><div class="panel-head"><div><h3>Participantes do campeonato</h3><p>Estes nomes pertencem somente a esta competição.</p></div></div><div class="panel-body"><div class="entry-list">${tournament.participants.map((participant,index) => `<div class="entry-row"><div class="entry-index">${String(index+1).padStart(2,'0')}</div><div><strong>${escapeHtml(participant.name)}</strong>${tournament.mode === 'teams' ? `<div class="member-chips">${participant.players.map((player) => `<span class="member-chip">${escapeHtml(player.name)}</span>`).join('')}</div>` : ''}</div><span class="format-badge">${participant.players.length} jogador(es)</span></div>`).join('')}</div></div></div>
-    <div class="panel"><div class="panel-head"><div><h3>Estatísticas individuais</h3><p>Em equipes, somente jogadores escalados recebem a partida.</p></div></div><div class="table-wrap"><table class="stats-table"><thead><tr><th>Jogador</th>${tournament.mode === 'teams' ? '<th>Equipe</th>' : ''}<th class="num">J</th><th class="num">V</th><th class="num">E</th><th class="num">D</th><th class="num">GP</th><th class="num">GC</th><th class="num">SG</th><th class="num">MVP</th></tr></thead><tbody>${stats.map((row) => `<tr><td><strong>${escapeHtml(row.name)}</strong></td>${tournament.mode === 'teams' ? `<td>${escapeHtml(row.team)}</td>` : ''}<td class="num">${row.pj}</td><td class="num">${row.v}</td><td class="num">${row.e}</td><td class="num">${row.d}</td><td class="num">${row.gp}</td><td class="num">${row.gc}</td><td class="num">${row.sg}</td><td class="num">${row.mvp}</td></tr>`).join('')}</tbody></table></div></div>
+function choiceStatistics(tournament) {
+  const profile = getGameProfile(tournament);
+  const map = new Map();
+  const add = (name, side, match) => {
+    const key = String(name || '').trim();
+    if (!key) return;
+    if (!map.has(key)) map.set(key, { name:key, picks:0,wins:0,losses:0,draws:0,scoreFor:0,scoreAgainst:0,kills:0,deaths:0,assists:0 });
+    const row = map.get(key);
+    const ownId = side === 'home' ? match.homeId : match.awayId;
+    const ownScore = Number(side === 'home' ? match.homeScore : match.awayScore) || 0;
+    const oppScore = Number(side === 'home' ? match.awayScore : match.homeScore) || 0;
+    const winner = matchWinner(match);
+    row.picks += 1;
+    row.scoreFor += ownScore;
+    row.scoreAgainst += oppScore;
+    if (winner === ownId) row.wins += 1;
+    else if (winner) row.losses += 1;
+    else row.draws += 1;
+    if (profile.id === 'lol') {
+      row.kills += ownScore;
+      row.deaths += Number(side === 'home' ? match.homeDeaths : match.awayDeaths) || 0;
+      row.assists += Number(side === 'home' ? match.homeAssists : match.awayAssists) || 0;
+    }
+  };
+  for (const match of tournament.matches.filter((item) => item.played)) {
+    add(match.homeChoice, 'home', match);
+    add(match.awayChoice, 'away', match);
+  }
+  return [...map.values()].map((row) => ({
+    ...row,
+    winRate: row.picks ? (row.wins / row.picks) * 100 : 0,
+    kda: profile.id === 'lol' ? (row.kills + row.assists) / Math.max(1,row.deaths) : 0
+  })).sort((a,b) => b.picks-a.picks || b.wins-a.wins || a.name.localeCompare(b.name));
+}
+
+function tournamentRecords(tournament) {
+  const played = tournament.matches.filter((match) => match.played && !match.isBye);
+  const profile = getGameProfile(tournament);
+  const totalScore = played.reduce((sum,match) => sum + Number(match.homeScore || 0) + Number(match.awayScore || 0),0);
+  const biggest = [...played].sort((a,b) => Math.abs(Number(b.homeScore)-Number(b.awayScore)) - Math.abs(Number(a.homeScore)-Number(a.awayScore)))[0] || null;
+  const highest = [...played].sort((a,b) => (Number(b.homeScore)+Number(b.awayScore)) - (Number(a.homeScore)+Number(a.awayScore)))[0] || null;
+  const mvpCounts = new Map();
+  for (const match of played) if (match.mvpPlayerId) mvpCounts.set(match.mvpPlayerId,(mvpCounts.get(match.mvpPlayerId)||0)+1);
+  const topMvp = [...mvpCounts.entries()].sort((a,b)=>b[1]-a[1])[0];
+  let topMvpName = '—';
+  if (topMvp) {
+    for (const participant of tournament.participants) {
+      const player = participant.players.find((item) => item.id === topMvp[0]);
+      if (player) topMvpName = `${player.name} (${topMvp[1]})`;
+    }
+  }
+  const finishCounts = new Map();
+  for (const match of played) if (match.finishType) finishCounts.set(match.finishType,(finishCounts.get(match.finishType)||0)+1);
+  const topFinish = [...finishCounts.entries()].sort((a,b)=>b[1]-a[1])[0];
+  return {
+    played,
+    totalScore,
+    average: played.length ? totalScore / played.length : 0,
+    biggest,
+    highest,
+    topMvpName,
+    topFinish: topFinish ? `${topFinish[0]} (${topFinish[1]})` : '—',
+    profile
+  };
+}
+
+function matchRecordName(tournament, match) {
+  if (!match) return '—';
+  return `${participantName(tournament,match.homeId)} ${match.homeScore} × ${match.awayScore} ${participantName(tournament,match.awayId)}`;
+}
+
+function statisticsTabHtml(tournament) {
+  const profile = getGameProfile(tournament);
+  const records = tournamentRecords(tournament);
+  const choices = choiceStatistics(tournament);
+  const players = playerStats(tournament);
+  const mostChosen = choices[0];
+  const leastChosen = choices.length ? [...choices].sort((a,b)=>a.picks-b.picks || a.name.localeCompare(b.name))[0] : null;
+  const bestChoice = choices.length ? [...choices].sort((a,b)=>b.winRate-a.winRate || b.wins-a.wins || b.picks-a.picks)[0] : null;
+  return `<div class="stats-dashboard ${gameProfileClass(tournament)}">
+    <div class="stats-hero">
+      <div><span class="panel-kicker">CENTRAL DE DADOS · ${profile.short}</span><h3>Estatísticas do campeonato</h3><p>Todos os números abaixo são calculados somente com as partidas desta competição.</p></div>
+      <div class="stats-hero-icon">${profile.icon}</div>
+    </div>
+    <div class="record-grid">
+      ${recordCard('Partidas realizadas',records.played.length,`${playableMatches(tournament)-records.played.length} restantes`,'▦')}
+      ${recordCard(`${profile.scoreLabel} totais`,records.totalScore,`Média ${records.average.toFixed(1)} por jogo`,'Σ')}
+      ${recordCard('Maior diferença',records.biggest ? Math.abs(Number(records.biggest.homeScore)-Number(records.biggest.awayScore)) : '—',matchRecordName(tournament,records.biggest),'↗')}
+      ${recordCard('Jogo com maior total',records.highest ? Number(records.highest.homeScore)+Number(records.highest.awayScore) : '—',matchRecordName(tournament,records.highest),'★')}
+      ${recordCard('Mais MVPs',records.topMvpName,'Destaque individual','M')}
+      ${profile.id === 'beyblade' ? recordCard('Finalização mais comum',records.topFinish,'Batalhas registradas','◎') : recordCard(`${profile.choiceLabel} mais frequente`,mostChosen?.name || '—',mostChosen ? `${mostChosen.picks} escolha(s)` : 'Sem dados',profile.id === 'fifa' ? '⚽' : '◈')}
+    </div>
+    <div class="stats-columns">
+      <section class="panel analytics-panel">
+        <div class="panel-head"><div><span class="panel-kicker">META DO JOGO</span><h3>${profile.choicePlural} utilizados</h3><p>Escolhas, resultados e rendimento dentro deste campeonato.</p></div></div>
+        <div class="analytics-summary">
+          <div><span>Mais escolhido</span><strong>${escapeHtml(mostChosen?.name || '—')}</strong></div>
+          <div><span>Menos escolhido</span><strong>${escapeHtml(leastChosen?.name || '—')}</strong></div>
+          <div><span>Melhor aproveitamento</span><strong>${escapeHtml(bestChoice?.name || '—')}</strong><small>${bestChoice ? `${bestChoice.winRate.toFixed(1)}%` : ''}</small></div>
+        </div>
+        <div class="table-wrap"><table class="stats-table"><thead><tr><th>${profile.id === 'fifa' ? 'Time' : profile.id === 'lol' ? 'Campeão' : 'Beyblade'}</th><th class="num">ESC</th><th class="num">V</th><th class="num">D</th><th class="num">WR</th>${profile.id === 'lol' ? '<th class="num">K</th><th class="num">D</th><th class="num">A</th><th class="num">KDA</th>' : `<th class="num">${profile.scoreShort}+</th><th class="num">${profile.scoreShort}-</th>`}</tr></thead><tbody>${choices.length ? choices.map((row)=>`<tr><td><strong>${escapeHtml(row.name)}</strong></td><td class="num">${row.picks}</td><td class="num win-cell">${row.wins}</td><td class="num loss-cell">${row.losses}</td><td class="num"><strong>${row.winRate.toFixed(1)}%</strong></td>${profile.id === 'lol' ? `<td class="num">${row.kills}</td><td class="num">${row.deaths}</td><td class="num">${row.assists}</td><td class="num">${row.kda.toFixed(2)}</td>` : `<td class="num">${row.scoreFor}</td><td class="num">${row.scoreAgainst}</td>`}</tr>`).join('') : `<tr><td colspan="9" class="empty-cell">Registre partidas e informe ${profile.choiceLabel.toLowerCase()} para gerar este ranking.</td></tr>`}</tbody></table></div>
+      </section>
+      <section class="panel analytics-panel">
+        <div class="panel-head"><div><span class="panel-kicker">DESEMPENHO</span><h3>Jogadores</h3><p>Campanha individual somente neste campeonato.</p></div></div>
+        <div class="table-wrap"><table class="stats-table"><thead><tr><th>Jogador</th>${tournament.mode === 'teams' ? '<th>Equipe</th>' : ''}<th class="num">J</th><th class="num">V</th><th class="num">D</th><th class="num">WR</th>${profile.id === 'lol' ? '<th class="num">K</th><th class="num">D</th><th class="num">A</th><th class="num">KDA</th>' : `<th class="num">${profile.scoreShort}+</th><th class="num">${profile.scoreShort}-</th>`}<th class="num">MVP</th></tr></thead><tbody>${players.map((row)=>`<tr><td><strong>${escapeHtml(row.name)}</strong></td>${tournament.mode === 'teams' ? `<td>${escapeHtml(row.team)}</td>` : ''}<td class="num">${row.pj}</td><td class="num win-cell">${row.v}</td><td class="num loss-cell">${row.d}</td><td class="num">${row.winRate.toFixed(1)}%</td>${profile.id === 'lol' ? `<td class="num">${row.kills}</td><td class="num">${row.deaths}</td><td class="num">${row.assists}</td><td class="num">${row.kda.toFixed(2)}</td>` : `<td class="num">${row.gp}</td><td class="num">${row.gc}</td>`}<td class="num">${row.mvp}</td></tr>`).join('')}</tbody></table></div>
+      </section>
+    </div>
+    <section class="panel"><div class="panel-head"><div><span class="panel-kicker">ELENCO</span><h3>Participantes do campeonato</h3></div></div><div class="panel-body"><div class="participant-roster">${tournament.participants.map((participant,index)=>`<div class="roster-card"><span>${String(index+1).padStart(2,'0')}</span><div><strong>${escapeHtml(participant.name)}</strong>${tournament.mode === 'teams' ? `<small>${participant.players.map((p)=>escapeHtml(p.name)).join(' · ')}</small>` : ''}</div></div>`).join('')}</div></div></section>
   </div>`;
 }
 
+function recordCard(label,value,sub,icon) {
+  return `<article class="record-card"><span class="record-icon">${icon}</span><div><span>${label}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(sub)}</small></div></article>`;
+}
+
 function settingsTabHtml(tournament) {
+  const profile = getGameProfile(tournament);
   return `<div class="panel"><div class="panel-head"><div><h3>Configuração do campeonato</h3><p>Resumo das regras usadas na geração.</p></div></div><div class="panel-body"><table class="stats-table"><tbody>
+    <tr><td>Jogo</td><td class="num"><strong>${profile.icon} ${escapeHtml(profile.label)}</strong></td></tr>
+    <tr><td>Placar registrado</td><td class="num">${profile.scoreLabel}</td></tr>
+    <tr><td>Informação por lado</td><td class="num">${profile.choiceLabel}</td></tr>
     <tr><td>Formato</td><td class="num"><strong>${formatLabel(tournament.format)}</strong></td></tr>
     <tr><td>Modo</td><td class="num">${modeLabel(tournament.mode)}</td></tr>
     <tr><td>Participantes</td><td class="num">${tournament.participants.length}</td></tr>
     ${tournament.format !== 'knockout' ? `<tr><td>Turnos da liga</td><td class="num">${tournament.settings.leagueLegs}</td></tr><tr><td>Pontos por vitória</td><td class="num">${tournament.settings.pointsWin}</td></tr><tr><td>Pontos por empate</td><td class="num">${tournament.settings.pointsDraw}</td></tr>` : ''}
-    ${tournament.format === 'mixed' ? `<tr><td>Classificados</td><td class="num">${tournament.settings.qualifiers}</td></tr>` : ''}
-    <tr><td>Informação extra</td><td class="num">${escapeHtml(tournament.extraLabel)}</td></tr>
+    ${tournament.format === 'mixed' ? `<tr><td>Classificados</td><td class="num">${tournament.settings.qualifiers}</td></tr><tr><td>Cruzamento do mata-mata</td><td class="num">${tournament.settings.knockoutPairing === 'seeded' ? 'Melhor contra pior' : 'Sorteio livre'}</td></tr><tr><td>Estrutura da chave</td><td class="num">${tournament.settings.bracketMode === 'complete' ? 'Completa, sem folgas' : 'Adaptada'}</td></tr>` : ''}
   </tbody></table></div></div>`;
+}
+
+function matchGameFieldsHtml(tournament, match, home, away, knockout) {
+  const profile = getGameProfile(tournament);
+  if (profile.id === 'lol') {
+    return `<div class="versus-form game-lol">
+      ${lolSideForm('home',home,match.homeChoice,match.homeScore,match.homeDeaths,match.homeAssists)}
+      <div class="versus-divider"><span>VS</span></div>
+      ${lolSideForm('away',away,match.awayChoice,match.awayScore,match.awayDeaths,match.awayAssists)}
+    </div>
+    <label class="field winner-field"><span>Vencedor da partida</span><select id="manualWinner" required><option value="">Selecione o vencedor</option><option value="${home.id}" ${match.winnerId === home.id ? 'selected' : ''}>${escapeHtml(home.name)}</option><option value="${away.id}" ${match.winnerId === away.id ? 'selected' : ''}>${escapeHtml(away.name)}</option></select><small>Kills não definem obrigatoriamente o vencedor; por isso ele é informado separadamente.</small></label>`;
+  }
+  if (profile.id === 'beyblade') {
+    return `<div class="versus-form game-beyblade">
+      ${basicSideForm('home',home,profile,match.homeChoice,match.homeScore)}
+      <div class="versus-divider"><span>VS</span></div>
+      ${basicSideForm('away',away,profile,match.awayChoice,match.awayScore)}
+    </div>
+    <div class="grid cols-2"><label class="field"><span>Vencedor da batalha</span><select id="manualWinner" required><option value="">Selecione o vencedor</option><option value="${home.id}" ${match.winnerId === home.id ? 'selected' : ''}>${escapeHtml(home.name)}</option><option value="${away.id}" ${match.winnerId === away.id ? 'selected' : ''}>${escapeHtml(away.name)}</option></select></label><label class="field"><span>Tipo de finalização</span><select id="finishType"><option value="">Não informado</option>${profile.finishTypes.map((type)=>`<option value="${type}" ${match.finishType === type ? 'selected' : ''}>${type}</option>`).join('')}</select></label></div>`;
+  }
+  return `<div class="versus-form game-fifa">
+    ${basicSideForm('home',home,profile,match.homeChoice,match.homeScore)}
+    <div class="versus-divider"><span>VS</span></div>
+    ${basicSideForm('away',away,profile,match.awayChoice,match.awayScore)}
+  </div>
+  ${knockout ? `<label class="field winner-field"><span>Vencedor em caso de empate</span><select id="manualWinner"><option value="">Definir pelo placar</option><option value="${home.id}" ${match.winnerId === home.id ? 'selected' : ''}>${escapeHtml(home.name)}</option><option value="${away.id}" ${match.winnerId === away.id ? 'selected' : ''}>${escapeHtml(away.name)}</option></select></label>` : ''}`;
+}
+
+function basicSideForm(side, participant, profile, choice, score) {
+  return `<section class="side-form"><div class="side-form-head"><span>${side === 'home' ? 'LADO A' : 'LADO B'}</span><strong>${escapeHtml(participant.name)}</strong></div><label class="field"><span>${profile.choiceLabel}</span><input id="${side}Choice" value="${escapeHtml(choice || '')}" placeholder="Digite ${profile.choiceLabel.toLowerCase()}"></label><label class="field score-input"><span>${profile.scoreLabel}</span><input id="${side}Score" type="number" min="0" value="${score ?? ''}" required></label></section>`;
+}
+
+function lolSideForm(side, participant, champion, kills, deaths, assists) {
+  return `<section class="side-form"><div class="side-form-head"><span>${side === 'home' ? 'LADO AZUL' : 'LADO VERMELHO'}</span><strong>${escapeHtml(participant.name)}</strong></div><label class="field"><span>Campeão utilizado</span><input id="${side}Choice" value="${escapeHtml(champion || '')}" placeholder="Ex.: Akali"></label><div class="kda-inputs"><label class="field"><span>Kills</span><input id="${side}Score" type="number" min="0" value="${kills ?? ''}" required></label><label class="field"><span>Mortes</span><input id="${side}Deaths" type="number" min="0" value="${deaths ?? 0}" required></label><label class="field"><span>Assistências</span><input id="${side}Assists" type="number" min="0" value="${assists ?? 0}" required></label></div></section>`;
 }
 
 function openMatchModal(tournamentId, matchId) {
@@ -1007,29 +1415,18 @@ function openMatchModal(tournamentId, matchId) {
   const away = participantById(tournament, match.awayId);
   const knockout = match.stage === 'knockout' || match.stage === 'third';
   const possibleMvp = [...(home?.players || []), ...(away?.players || [])];
+  const profile = getGameProfile(tournament);
 
   openModal(`
-    <div class="modal-head"><div><div class="eyebrow">${escapeHtml(match.roundName)}</div><h2>Registrar partida</h2></div><button class="icon-button" data-close>×</button></div>
+    <div class="modal-head game-${profile.id}"><div><div class="eyebrow">${profile.icon} ${escapeHtml(match.roundName)}</div><h2>Registrar partida de ${profile.label}</h2></div><button class="icon-button" data-close>×</button></div>
     <form id="matchForm">
-      <div class="modal-body stack">
-        <div class="match-form-score">
-          <div class="match-form-team">${escapeHtml(home?.name || 'A definir')}</div>
-          <label class="field"><span>Placar</span><input id="homeScore" type="number" min="0" value="${match.homeScore ?? ''}" required></label>
-          <div class="match-vs" style="padding-bottom:13px">×</div>
-          <label class="field"><span>Placar</span><input id="awayScore" type="number" min="0" value="${match.awayScore ?? ''}" required></label>
-          <div class="match-form-team away">${escapeHtml(away?.name || 'A definir')}</div>
-        </div>
-        ${knockout ? `<label class="field"><span>Vencedor em caso de empate</span><select id="manualWinner"><option value="">Definir pelo placar</option><option value="${home.id}" ${match.winnerId === home.id ? 'selected' : ''}>${escapeHtml(home.name)}</option><option value="${away.id}" ${match.winnerId === away.id ? 'selected' : ''}>${escapeHtml(away.name)}</option></select></label>` : ''}
-        <div class="grid cols-2">
-          <label class="field"><span>${escapeHtml(tournament.extraLabel)} — ${escapeHtml(home.name)}</span><input id="homeChoice" value="${escapeHtml(match.homeChoice || '')}"></label>
-          <label class="field"><span>${escapeHtml(tournament.extraLabel)} — ${escapeHtml(away.name)}</span><input id="awayChoice" value="${escapeHtml(match.awayChoice || '')}"></label>
-        </div>
+      <div class="modal-body stack game-match-form ${gameProfileClass(tournament)}">
+        ${matchGameFieldsHtml(tournament,match,home,away,knockout)}
         ${tournament.mode === 'teams' ? `<div class="grid cols-2">${lineupHtml(home,match.homeLineup,'home')}${lineupHtml(away,match.awayLineup,'away')}</div>` : ''}
-        <label class="field"><span>MVP da partida</span><select id="matchMvp"><option value="">Nenhum</option>${possibleMvp.map((player) => `<option value="${player.id}" ${match.mvpPlayerId === player.id ? 'selected' : ''}>${escapeHtml(player.name)}</option>`).join('')}</select></label>
-        <label class="field"><span>Observações</span><textarea id="matchNotes" placeholder="Anotações opcionais sobre a partida">${escapeHtml(match.notes || '')}</textarea></label>
+        <div class="grid cols-2"><label class="field"><span>MVP da partida</span><select id="matchMvp"><option value="">Nenhum</option>${possibleMvp.map((player) => `<option value="${player.id}" ${match.mvpPlayerId === player.id ? 'selected' : ''}>${escapeHtml(player.name)}</option>`).join('')}</select></label><label class="field"><span>Observações</span><textarea id="matchNotes" placeholder="Anotações opcionais sobre a partida">${escapeHtml(match.notes || '')}</textarea></label></div>
       </div>
       <div class="modal-foot"><div>${match.played ? '<button class="button danger" type="button" data-clear-result>Limpar resultado</button>' : ''}</div><div style="display:flex;gap:8px"><button class="button ghost" type="button" data-close>Cancelar</button><button class="button primary" type="submit">Salvar resultado</button></div></div>
-    </form>`);
+    </form>`,'wide');
 
   $$('[data-close]').forEach((button) => button.addEventListener('click', closeModal));
   $('[data-clear-result]')?.addEventListener('click', async () => {
@@ -1043,9 +1440,15 @@ function openMatchModal(tournamentId, matchId) {
     event.preventDefault();
     const homeScore = Number($('#homeScore').value);
     const awayScore = Number($('#awayScore').value);
-    let winnerId = homeScore > awayScore ? home.id : awayScore > homeScore ? away.id : null;
-    if (knockout && homeScore === awayScore) winnerId = $('#manualWinner').value || null;
-    if (knockout && !winnerId) return toast('Em mata-mata, selecione o vencedor quando houver empate.', 'error');
+    let winnerId = null;
+    if (profile.id === 'fifa') {
+      winnerId = homeScore > awayScore ? home.id : awayScore > homeScore ? away.id : null;
+      if (knockout && homeScore === awayScore) winnerId = $('#manualWinner')?.value || null;
+      if (knockout && !winnerId) return toast('Em mata-mata, selecione o vencedor quando houver empate.', 'error');
+    } else {
+      winnerId = $('#manualWinner')?.value || null;
+      if (!winnerId) return toast('Selecione o vencedor da partida.', 'error');
+    }
 
     if (match.stage === 'league' && tournament.format === 'mixed' && tournament.knockoutState.started) {
       if (!confirm('Alterar a fase de liga removerá o mata-mata já gerado. Continuar?')) return;
@@ -1058,6 +1461,11 @@ function openMatchModal(tournamentId, matchId) {
     match.played = true;
     match.homeChoice = $('#homeChoice').value.trim();
     match.awayChoice = $('#awayChoice').value.trim();
+    match.homeDeaths = Number($('#homeDeaths')?.value || 0);
+    match.awayDeaths = Number($('#awayDeaths')?.value || 0);
+    match.homeAssists = Number($('#homeAssists')?.value || 0);
+    match.awayAssists = Number($('#awayAssists')?.value || 0);
+    match.finishType = $('#finishType')?.value || '';
     match.mvpPlayerId = $('#matchMvp').value;
     match.notes = $('#matchNotes').value.trim();
     if (tournament.mode === 'teams') {
@@ -1088,13 +1496,13 @@ function truncateKnockoutAfter(tournament, round) {
 
 function resetMixedKnockout(tournament) {
   tournament.matches = tournament.matches.filter((match) => match.stage === 'league');
-  tournament.knockoutState = { started: false, currentRound: 0, pendingByes: [], seeded: false };
+  tournament.knockoutState = { started: false, currentRound: 0, pendingByes: [], initialByes: [], pairing: tournament.settings.knockoutPairing || 'draw', seeded: tournament.settings.knockoutPairing === 'seeded' };
   tournament.championId = null;
 }
 
 function clearMatchResult(tournament, match) {
   if (match.stage === 'knockout') truncateKnockoutAfter(tournament, match.bracketRound);
-  Object.assign(match, { homeScore:null, awayScore:null, winnerId:null, played:false, homeChoice:'', awayChoice:'', mvpPlayerId:'', notes:'' });
+  Object.assign(match, { homeScore:null, awayScore:null, winnerId:null, played:false, homeChoice:'', awayChoice:'', homeDeaths:0, awayDeaths:0, homeAssists:0, awayAssists:0, finishType:'', mvpPlayerId:'', notes:'' });
   tournament.championId = null;
   updateLeagueChampion(tournament);
 }

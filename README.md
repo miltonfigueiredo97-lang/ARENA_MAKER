@@ -1,14 +1,12 @@
-# Arena Maker V4
+# Arena Maker V6
 
-Versão reconstruída com foco total nos campeonatos.
+Atualização com perfis de jogo configuráveis:
 
-- A tela inicial mostra apenas campeonatos.
-- Os participantes são cadastrados dentro de cada campeonato.
-- Formatos: Liga, Mata-mata e Liga + Mata-mata.
-- No formato misto, qualquer quantidade de classificados pode ser definida; folgas são geradas quando necessário.
-- Equipes mantêm estatísticas individuais por escalação.
-- Resultados, escolhas usadas, MVP e observações são registrados por partida.
-- Dados salvos na tabela `tournaments` do Supabase.
-- Publicador de ZIP para GitHub mantido.
+- FIFA: gols, times utilizados, goleadas, gols por time e aproveitamento.
+- League of Legends: campeão utilizado, kills, mortes, assistências, KDA e win rate.
+- Beyblade: pontos, beyblade utilizado, vencedor e tipo de finalização.
+- Painel estatístico exclusivo de cada campeonato.
+- Liga, mata-mata e liga + mata-mata continuam no mesmo motor.
+- Chaves adaptadas usam folgas corretas; com 6 classificados, 1º e 2º avançam e 3º×6º / 4º×5º jogam a preliminar no modo melhor contra pior.
 
-Não execute novamente o SQL se sua tabela `tournaments` já funciona. O arquivo `supabase/schema.sql` é apenas para instalação ou reparo.
+Não exige novo SQL. Substitua os arquivos no GitHub ou use o importador de ZIP.

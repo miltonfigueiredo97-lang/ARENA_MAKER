@@ -1,4 +1,4 @@
--- Arena Maker V4 — estrutura focada em campeonatos.
+-- Arena Maker V5 — estrutura focada em campeonatos.
 -- A tabela players antiga pode permanecer; esta versão não a utiliza.
 
 begin;
