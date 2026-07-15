@@ -1,29 +1,12 @@
-ARENA MAKER V2 — COLOCAR NO AR
+ARENA MAKER V3 — SEM LOGIN
 
-1. SUPABASE
-- Crie um projeto.
-- Abra SQL Editor.
-- Copie e execute todo o arquivo: supabase/schema.sql
-- Copie: Project URL, Publishable/Anon Key e Service Role Key.
-
-2. GITHUB
-- Crie um repositório para o Arena Maker.
-- Envie todos os arquivos desta pasta.
-- Crie uma GitHub App com permissão Contents: Read and write.
-- Instale a App somente nesse repositório.
-- Anote App ID e Installation ID e gere a chave privada.
-
-3. VERCEL
-- Importe o repositório do GitHub.
-- Em Settings > Environment Variables, cadastre tudo que aparece em .env.example.
-- Faça o deploy novamente.
-
-4. USO
-- Entre no sistema pelo link mágico enviado ao e-mail.
-- Cadastre os jogadores uma única vez.
-- Em cada campeonato, selecione os participantes e escolha Liga, Mata-mata ou Misto.
-- Para atualizar o projeto depois, abra Publicar ZIP, arraste o ZIP e clique em Fazer commit no GitHub.
-
-IMPORTANTE
-- Nunca coloque a Service Role do Supabase ou a chave privada do GitHub no HTML.
-- O sistema já foi preparado para manter esses segredos somente no servidor do Vercel.
+1. No GitHub, substitua os arquivos atuais pelos arquivos deste projeto.
+2. No Supabase: SQL Editor > New query.
+3. Cole todo o conteúdo de supabase/schema.sql e clique em Run.
+4. Não configure Authentication, Site URL, Redirect URL ou confirmação de e-mail.
+5. Na Vercel, mantenha SUPABASE_URL e SUPABASE_ANON_KEY.
+6. SUPABASE_SERVICE_ROLE_KEY e IMPORTER_ALLOWED_EMAILS não são mais necessários.
+7. Para publicar ZIP, crie PUBLISH_SECRET na Vercel com um código que só você saiba.
+8. Mantenha GITHUB_APP_ID, GITHUB_INSTALLATION_ID, GITHUB_PRIVATE_KEY, GITHUB_OWNER, GITHUB_REPO e GITHUB_BRANCH.
+9. Faça Redeploy.
+10. Abra o site: ele entra diretamente, sem login.

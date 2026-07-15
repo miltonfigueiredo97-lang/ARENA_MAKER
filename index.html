@@ -11,33 +11,7 @@
   <link rel="stylesheet" href="assets/styles.css">
 </head>
 <body>
-  <div id="authScreen" class="auth-screen hidden">
-    <div class="auth-card">
-      <div class="brand brand-auth">
-        <div class="brand-mark">AM</div>
-        <div>
-          <strong>Arena Maker</strong>
-          <span>Gestão de campeonatos</span>
-        </div>
-      </div>
-      <div class="auth-copy">
-        <span class="eyebrow">ACESSO SEGURO</span>
-        <h1>Seus campeonatos, jogadores e estatísticas em um só lugar.</h1>
-        <p>Entre por link mágico. Não é necessário criar senha.</p>
-      </div>
-      <form id="loginForm" class="stack">
-        <label class="field">
-          <span>E-mail</span>
-          <input id="loginEmail" type="email" autocomplete="email" placeholder="voce@email.com" required>
-        </label>
-        <button class="button primary wide" type="submit">Enviar link de acesso</button>
-        <button id="continueLocalBtn" class="button ghost wide" type="button">Continuar em modo local</button>
-      </form>
-      <p id="authMessage" class="form-message"></p>
-    </div>
-  </div>
-
-  <div id="appShell" class="app-shell hidden">
+  <div id="appShell" class="app-shell">
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark">AM</div>
@@ -70,7 +44,6 @@
             <span>Dados neste navegador</span>
           </div>
         </div>
-        <button id="logoutBtn" class="text-button hidden">Sair da conta</button>
       </div>
     </aside>
 

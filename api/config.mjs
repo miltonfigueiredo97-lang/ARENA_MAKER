@@ -9,7 +9,8 @@ export default function handler(_request, response) {
       process.env.GITHUB_PRIVATE_KEY &&
       process.env.GITHUB_INSTALLATION_ID &&
       process.env.GITHUB_OWNER &&
-      process.env.GITHUB_REPO
+      process.env.GITHUB_REPO &&
+      process.env.PUBLISH_SECRET
     )
   });
 }

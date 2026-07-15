@@ -1,6 +1,6 @@
+import crypto from 'node:crypto';
 import { createAppAuth } from '@octokit/auth-app';
 import { Octokit } from '@octokit/rest';
-import { createClient } from '@supabase/supabase-js';
 
 const API_VERSION = '2022-11-28';
 const MAX_FILES = 400;
@@ -21,25 +21,19 @@ function validPath(path) {
   return true;
 }
 
-async function authorize(request) {
-  const authHeader = request.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-  if (!token) throw Object.assign(new Error('Sessão do Supabase ausente.'), { statusCode: 401 });
+function secureEqual(received, expected) {
+  const a = Buffer.from(String(received || ''), 'utf8');
+  const b = Buffer.from(String(expected || ''), 'utf8');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
 
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!supabaseUrl || !serviceKey) throw new Error('Supabase do servidor não configurado.');
-
-  const supabase = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
-  const { data, error } = await supabase.auth.getUser(token);
-  if (error || !data.user) throw Object.assign(new Error('Sessão inválida.'), { statusCode: 401 });
-
-  const allowedEmails = String(process.env.IMPORTER_ALLOWED_EMAILS || '')
-    .split(',').map((email) => email.trim().toLowerCase()).filter(Boolean);
-  if (allowedEmails.length && !allowedEmails.includes(String(data.user.email || '').toLowerCase())) {
-    throw Object.assign(new Error('Seu e-mail não tem permissão para publicar.'), { statusCode: 403 });
+function authorize(request) {
+  const expected = process.env.PUBLISH_SECRET;
+  const received = request.headers['x-publish-code'];
+  if (!expected) throw new Error('Código de publicação não configurado no servidor.');
+  if (!secureEqual(received, expected)) {
+    throw Object.assign(new Error('Código de publicação incorreto.'), { statusCode: 401 });
   }
-  return data.user;
 }
 
 async function githubClient() {
@@ -57,7 +51,7 @@ export default async function handler(request, response) {
   if (request.method !== 'POST') return response.status(405).json({ error: 'Método não permitido.' });
 
   try {
-    const user = await authorize(request);
+    authorize(request);
     const body = parseBody(request);
     const files = Array.isArray(body.files) ? body.files : [];
     const replace = Boolean(body.replace);
@@ -106,8 +100,16 @@ export default async function handler(request, response) {
 
     const tree = await octokit.rest.git.createTree({ owner, repo, base_tree: baseTreeSha, tree: treeEntries, headers });
     const commit = await octokit.rest.git.createCommit({
-      owner, repo, message, tree: tree.data.sha, parents: [parentSha],
-      author: { name: user.user_metadata?.full_name || user.email || 'Arena Maker', email: user.email || 'arena-maker@users.noreply.github.com', date: new Date().toISOString() },
+      owner,
+      repo,
+      message,
+      tree: tree.data.sha,
+      parents: [parentSha],
+      author: {
+        name: process.env.GITHUB_COMMIT_NAME || 'Arena Maker',
+        email: process.env.GITHUB_COMMIT_EMAIL || 'arena-maker@users.noreply.github.com',
+        date: new Date().toISOString()
+      },
       headers
     });
     await octokit.rest.git.updateRef({ owner, repo, ref: `heads/${branch}`, sha: commit.data.sha, force: false, headers });

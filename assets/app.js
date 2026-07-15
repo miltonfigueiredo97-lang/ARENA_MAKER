@@ -14,8 +14,6 @@ const PLAYER_COLORS = ['#7c5cff', '#2dd4a8', '#38bdf8', '#fb7185', '#fbbf24', '#
 const state = {
   config: null,
   supabase: null,
-  session: null,
-  user: null,
   localMode: true,
   players: [],
   tournaments: [],
@@ -86,62 +84,26 @@ async function init() {
   bindStaticEvents();
 
   if (state.config.supabaseConfigured && window.supabase?.createClient) {
-    state.supabase = window.supabase.createClient(state.config.supabaseUrl, state.config.supabaseAnonKey, {
-      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
-    });
-    const { data } = await state.supabase.auth.getSession();
-    state.session = data.session;
-    state.user = data.session?.user || null;
-
-    state.supabase.auth.onAuthStateChange(async (_event, session) => {
-      state.session = session;
-      state.user = session?.user || null;
-      if (session) await enterCloudMode();
-    });
+    state.supabase = window.supabase.createClient(
+      state.config.supabaseUrl,
+      state.config.supabaseAnonKey,
+      { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } }
+    );
+    await enterCloudMode();
+  } else {
+    enterLocalMode();
   }
-
-  if (state.session) await enterCloudMode();
-  else showAuth();
 }
 
 function bindStaticEvents() {
-  $('#loginForm').addEventListener('submit', loginWithMagicLink);
-  $('#continueLocalBtn').addEventListener('click', enterLocalMode);
-  $('#logoutBtn').addEventListener('click', logout);
   $('#newPlayerQuickBtn').addEventListener('click', () => openPlayerModal());
   $('#newTournamentBtn').addEventListener('click', openTournamentWizard);
-
   $$('.nav-item').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.view)));
-}
-
-function showAuth() {
-  $('#authScreen').classList.remove('hidden');
-  $('#appShell').classList.add('hidden');
-  if (!state.config.supabaseConfigured) {
-    $('#authMessage').textContent = 'Supabase ainda não configurado. Você pode usar o modo local e conectar depois.';
-  }
-}
-
-async function loginWithMagicLink(event) {
-  event.preventDefault();
-  if (!state.supabase) {
-    $('#authMessage').textContent = 'Configure as variáveis do Supabase no Vercel antes de entrar.';
-    return;
-  }
-  const email = $('#loginEmail').value.trim();
-  $('#authMessage').textContent = 'Enviando link...';
-  const { error } = await state.supabase.auth.signInWithOtp({
-    email,
-    options: { emailRedirectTo: window.location.origin }
-  });
-  $('#authMessage').textContent = error ? error.message : 'Link enviado. Abra seu e-mail para entrar.';
 }
 
 async function enterCloudMode() {
   state.localMode = false;
-  $('#authScreen').classList.add('hidden');
   $('#appShell').classList.remove('hidden');
-  $('#logoutBtn').classList.remove('hidden');
   setSyncStatus(true);
   await loadCloudData();
   renderAll();
@@ -149,23 +111,10 @@ async function enterCloudMode() {
 
 function enterLocalMode() {
   state.localMode = true;
-  state.user = null;
-  state.session = null;
-  $('#authScreen').classList.add('hidden');
   $('#appShell').classList.remove('hidden');
-  $('#logoutBtn').classList.add('hidden');
   setSyncStatus(false);
   loadLocalData();
   renderAll();
-}
-
-async function logout() {
-  if (state.supabase) await state.supabase.auth.signOut();
-  state.session = null;
-  state.user = null;
-  state.players = [];
-  state.tournaments = [];
-  showAuth();
 }
 
 function setSyncStatus(online) {
@@ -204,7 +153,7 @@ async function persistPlayer(player) {
   if (state.localMode) {
     saveLocalData();
   } else {
-    const payload = { ...player, owner_id: state.user.id, updated_at: now() };
+    const payload = { ...player, updated_at: now() };
     const { error } = await state.supabase.from('players').upsert(payload);
     if (error) throw error;
   }
@@ -232,7 +181,6 @@ async function persistTournament(tournament) {
   } else {
     const payload = {
       id: tournament.id,
-      owner_id: state.user.id,
       name: tournament.name,
       game: tournament.game,
       mode: tournament.mode,
@@ -895,7 +843,6 @@ function rerollTournament(tournament) {
 
 function renderImporter() {
   const configured = Boolean(state.config.githubImporterConfigured);
-  const canPublish = configured && !state.localMode && state.session;
   $('#view-importer').innerHTML = `
     <div class="grid cols-2">
       <div class="card card-pad">
@@ -903,14 +850,14 @@ function renderImporter() {
         <div id="zipSummary" class="file-summary"></div>
       </div>
       <div class="stack">
-        <div class="card card-pad"><h3>Publicação automática</h3><p class="muted" style="line-height:1.6;">O token do GitHub não fica no HTML. A função do Vercel autentica como GitHub App, cria os arquivos, gera um commit único e atualiza a branch configurada.</p>${configured ? `<div class="notice success">Integração do GitHub configurada no servidor.</div>` : `<div class="notice warning">As variáveis da GitHub App ainda precisam ser configuradas no Vercel.</div>`}</div>
+        <div class="card card-pad"><h3>Publicação automática</h3><p class="muted" style="line-height:1.6;">O Arena Maker abre direto, sem conta e sem confirmação por e-mail. Apenas a publicação no GitHub pede um código curto, para ninguém que encontre o endereço do site conseguir alterar seu repositório.</p>${configured ? `<div class="notice success">Integração do GitHub configurada no servidor.</div>` : `<div class="notice warning">As variáveis da GitHub App e o código de publicação ainda precisam ser configurados no Vercel.</div>`}</div>
         <div class="card card-pad stack">
+          <label class="field"><span>Código de publicação</span><input id="publishCode" type="password" autocomplete="off" placeholder="Código salvo na Vercel"></label>
           <label class="field"><span>Mensagem do commit</span><input id="commitMessage" value="Atualização via Arena Maker"></label>
           <label class="choice selected"><input id="replaceRepo" type="checkbox"><strong>Espelhar o conteúdo do ZIP</strong><span>Exclui do repositório os arquivos que não estiverem no ZIP, preservando .github/workflows.</span></label>
-          <button id="publishZipBtn" class="button primary wide" ${canPublish ? '' : 'disabled'}>Fazer commit no GitHub</button>
+          <button id="publishZipBtn" class="button primary wide" ${configured ? '' : 'disabled'}>Fazer commit no GitHub</button>
           <div class="progress"><span id="uploadProgress"></span></div>
           <div id="publishResult"></div>
-          ${state.localMode ? `<div class="notice warning">Entre com sua conta do Supabase para autorizar a publicação.</div>` : ''}
         </div>
       </div>
     </div>`;
@@ -959,12 +906,13 @@ function formatBytes(bytes) { return bytes < 1024 ? `${bytes} B` : bytes < 1024 
 
 async function publishZip() {
   if (!state.zipPayload) return toast('Selecione um ZIP primeiro.', 'error');
-  if (!state.session) return toast('Entre com o Supabase para publicar.', 'error');
+  const publishCode = $('#publishCode').value.trim();
+  if (!publishCode) return toast('Digite o código de publicação.', 'error');
   const progress = $('#uploadProgress'); const result = $('#publishResult');
   try {
     progress.style.width = '20%'; result.innerHTML = '<div class="notice">Preparando commit...</div>';
     const response = await fetch('/api/github-import', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.session.access_token}` },
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Publish-Code': publishCode },
       body: JSON.stringify({ files: state.zipPayload.files, message: $('#commitMessage').value.trim() || 'Atualização via Arena Maker', replace: $('#replaceRepo').checked })
     });
     progress.style.width = '75%';
