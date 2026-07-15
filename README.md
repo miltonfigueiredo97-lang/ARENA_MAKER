@@ -1,16 +1,15 @@
-# Arena Maker V8
+# Arena Maker V9
 
-Atualização focada no painel do campeonato e na visualização do mata-mata.
+Atualização com equipes rotativas e classificação individual.
 
-- Remove a barra lateral global e usa um seletor de campeonatos no topo.
-- Amplia a área útil do dashboard.
-- Mostra a chave completa desde o início, com preliminar, oitavas/quartas, semifinais, final e terceiro lugar.
-- Exibe conectores entre os jogos e espaços reservados como “Vencedor do Jogo 03”.
-- Em Liga + Mata-mata, mostra a projeção completa antes do fim da liga e preenche os nomes quando os classificados forem definidos.
-- Mantém a regra correta para seis classificados: 1º e 2º com folga, 3º×6º e 4º×5º na preliminar.
-- FIFA: busca clubes e escudos pelo TheSportsDB.
-- League of Legends: busca campeões e imagens oficiais pelo Riot Data Dragon.
-- As imagens escolhidas aparecem nas partidas, na chave e nas estatísticas por time/campeão.
-- Mantém os perfis FIFA, League of Legends e Beyblade.
+- Novo modelo “Equipes rotativas na liga”.
+- Permite 2v2, 3v3, 4v4 e outros tamanhos compatíveis com o elenco.
+- Três formas de montagem: rotação equilibrada, sorteio em cada rodada e times fixos por blocos de rodadas.
+- O motor tenta equilibrar descansos, repetição de companheiros e repetição de adversários.
+- Todos os integrantes recebem vitória, empate, derrota, pontos e placar da equipe temporária.
+- A tabela da liga continua individual.
+- Em Liga + mata-mata, os melhores jogadores avançam para uma fase final individual (1v1).
+- As formações sorteadas podem ser ajustadas manualmente antes de salvar cada partida.
+- Mantém equipes fixas, modo individual, FIFA, League of Legends, Beyblade, chave completa e publicação por ZIP.
 
 Não exige alteração no SQL do Supabase.

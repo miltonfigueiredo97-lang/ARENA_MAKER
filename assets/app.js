@@ -84,7 +84,11 @@ const state = {
 };
 
 const formatLabel = (format) => ({ league: 'Liga', knockout: 'Mata-mata', mixed: 'Liga + mata-mata' }[format] || format);
-const modeLabel = (mode) => mode === 'teams' ? 'Equipes' : 'Individual';
+const modeLabel = (mode) => ({
+  individual: 'Individual',
+  teams: 'Equipes fixas',
+  dynamic: 'Equipes rotativas'
+}[mode] || 'Individual');
 const tournamentById = (id) => state.tournaments.find((item) => item.id === id);
 const participantById = (tournament, id) => tournament.participants.find((item) => item.id === id);
 const participantName = (tournament, id) => participantById(tournament, id)?.name || 'A definir';
@@ -172,7 +176,7 @@ function loadLocalData() {
 function normalizeTournament(raw) {
   if (!raw || typeof raw !== 'object') return raw;
   const tournament = clone(raw);
-  tournament.version = Math.max(Number(tournament.version || 0), 8);
+  tournament.version = Math.max(Number(tournament.version || 0), 9);
   tournament.gameProfile = tournament.gameProfile || detectGameProfile(tournament.game);
   const profile = getGameProfile(tournament.gameProfile);
   tournament.game = profile.label;
@@ -188,7 +192,12 @@ function normalizeTournament(raw) {
     qualifiers: tournament.settings?.qualifiers || 8,
     thirdPlace: tournament.settings?.thirdPlace ?? true,
     knockoutPairing: tournament.settings?.knockoutPairing || tournament.knockoutState?.pairing || (tournament.knockoutState?.seeded ? 'seeded' : 'draw'),
-    bracketMode: tournament.settings?.bracketMode || 'flexible'
+    bracketMode: tournament.settings?.bracketMode || 'flexible',
+    dynamicTeamSize: Math.max(2, Number(tournament.settings?.dynamicTeamSize || 2)),
+    dynamicFormation: tournament.settings?.dynamicFormation || 'balanced',
+    dynamicRounds: Math.max(1, Number(tournament.settings?.dynamicRounds || 5)),
+    dynamicBlockRounds: Math.max(1, Number(tournament.settings?.dynamicBlockRounds || 2)),
+    knockoutUnit: tournament.settings?.knockoutUnit || 'individual'
   };
   tournament.matches = (tournament.matches || []).map((match) => {
     const oldStage = String(match.stage || '').toLowerCase();
@@ -207,7 +216,10 @@ function normalizeTournament(raw) {
       awayDeaths: Number(match.awayDeaths ?? match.gameData?.awayDeaths ?? 0),
       homeAssists: Number(match.homeAssists ?? match.gameData?.homeAssists ?? 0),
       awayAssists: Number(match.awayAssists ?? match.gameData?.awayAssists ?? 0),
-      finishType: match.finishType || match.gameData?.finishType || ''
+      finishType: match.finishType || match.gameData?.finishType || '',
+      dynamicTeam: Boolean(match.dynamicTeam),
+      homeLabel: match.homeLabel || '',
+      awayLabel: match.awayLabel || ''
     };
   });
   tournament.knockoutState = tournament.knockoutState || {
@@ -428,7 +440,12 @@ function newWizardState() {
     qualifiers: 8,
     knockoutPairing: 'seeded',
     bracketMode: 'complete',
-    thirdPlace: true
+    thirdPlace: true,
+    dynamicTeamSize: 2,
+    dynamicFormation: 'balanced',
+    dynamicRounds: 7,
+    dynamicBlockRounds: 2,
+    knockoutUnit: 'individual'
   };
 }
 
@@ -519,7 +536,11 @@ function wizardFormatHtml(wizard) {
           ${formatChoice('mixed','Liga + mata-mata','A liga classifica e depois gera uma chave eliminatória.',wizard.format)}
         </div>
       </section>
-      <label class="field"><span>Disputa</span><select id="wizardMode"><option value="individual" ${wizard.mode === 'individual' ? 'selected' : ''}>Individual</option><option value="teams" ${wizard.mode === 'teams' ? 'selected' : ''}>Por equipes</option></select></label>
+      <label class="field"><span>Modelo dos participantes</span><select id="wizardMode">
+        <option value="individual" ${wizard.mode === 'individual' ? 'selected' : ''}>Individual durante todo o campeonato</option>
+        <option value="teams" ${wizard.mode === 'teams' ? 'selected' : ''}>Equipes fixas durante todo o campeonato</option>
+        <option value="dynamic" ${wizard.mode === 'dynamic' ? 'selected' : ''} ${wizard.format === 'knockout' ? 'disabled' : ''}>Equipes rotativas na liga, classificação individual</option>
+      </select><small>${wizard.format === 'knockout' ? 'Equipes rotativas exigem uma fase de liga. Use Liga ou Liga + mata-mata.' : 'No modo rotativo, as duplas/trios mudam, mas os pontos pertencem a cada jogador.'}</small></label>
     </div>`;
 }
 
@@ -537,7 +558,10 @@ function gameChoice(profile, selected) {
 
 function wizardParticipantsHtml(wizard) {
   if (wizard.mode === 'teams') return wizardTeamsHtml(wizard);
-  return `<h3>Jogadores deste campeonato</h3><p>Adicione os nomes diretamente aqui. Não existe cadastro separado nem ranking geral fora do campeonato.</p>
+  const dynamicCopy = wizard.mode === 'dynamic'
+    ? 'Estes jogadores serão misturados em equipes temporárias. A classificação continuará sendo individual.'
+    : 'Adicione os nomes diretamente aqui. Não existe cadastro separado nem ranking geral fora do campeonato.';
+  return `<h3>Jogadores deste campeonato</h3><p>${dynamicCopy}</p>
     <div class="stack">
       <div class="entry-add"><input id="entrantInput" placeholder="Digite o nome e pressione Enter"><button class="button primary" type="button" data-add-entrant>Adicionar</button></div>
       <div class="entry-summary"><span>${wizard.entrants.length} jogador(es) incluído(s)</span><span>Mínimo: 2</span></div>
@@ -564,7 +588,12 @@ function teamWizardHtml(team, index) {
 }
 
 function wizardRulesHtml(wizard) {
-  const participantCount = wizard.mode === 'individual' ? wizard.entrants.length : wizard.teams.length;
+  const participantCount = wizard.mode === 'teams' ? wizard.teams.length : wizard.entrants.length;
+  if (wizard.mode === 'dynamic') {
+    wizard.dynamicTeamSize = Math.min(Math.max(2, Number(wizard.dynamicTeamSize) || 2), Math.max(2, Math.floor(participantCount / 2)));
+    wizard.dynamicRounds = Math.max(1, Number(wizard.dynamicRounds) || recommendedDynamicRounds(participantCount, wizard.dynamicTeamSize));
+    wizard.leagueLegs = 1;
+  }
   const fullCounts = fullBracketCounts(participantCount);
   if (wizard.format === 'mixed') {
     wizard.qualifiers = Math.min(Math.max(2, Number(wizard.qualifiers) || 2), participantCount);
@@ -575,11 +604,11 @@ function wizardRulesHtml(wizard) {
   const plan = getBracketPlan(wizard.format === 'mixed' ? wizard.qualifiers : participantCount);
   return `<h3>Regras e montagem da chave</h3><p>Defina a liga e, no formato misto, como os classificados serão colocados no mata-mata.</p>
     <div class="stack">
-      ${wizard.format !== 'knockout' ? `<div class="grid cols-3">
+      ${wizard.format !== 'knockout' ? `${wizard.mode === 'dynamic' ? dynamicLeagueRulesHtml(wizard, participantCount) : `<div class="grid cols-3">
         <label class="field"><span>Turnos da liga</span><select id="wizardLeagueLegs"><option value="1" ${wizard.leagueLegs === 1 ? 'selected' : ''}>Turno único</option><option value="2" ${wizard.leagueLegs === 2 ? 'selected' : ''}>Ida e volta</option></select></label>
         <label class="field"><span>Pontos por vitória</span><input id="wizardPointsWin" type="number" min="1" value="${wizard.pointsWin}"></label>
         <label class="field"><span>Pontos por empate</span><input id="wizardPointsDraw" type="number" min="0" value="${wizard.pointsDraw}"></label>
-      </div>` : ''}
+      </div>`}` : ''}
       ${wizard.format === 'mixed' ? `<section class="rule-section">
         <div class="rule-section-head"><div><span class="section-number">01</span><div><h3>Como montar os confrontos</h3><p>Escolha se a liga define apenas os classificados ou também define a posição deles na chave.</p></div></div></div>
         <div class="choice-grid pairing-grid">
@@ -606,6 +635,60 @@ function wizardRulesHtml(wizard) {
     </div>`;
 }
 
+function recommendedDynamicRounds(participantCount, teamSize) {
+  const count = Math.max(0, Number(participantCount) || 0);
+  const size = Math.max(2, Number(teamSize) || 2);
+  if (count < size * 2) return 1;
+  return Math.max(3, Math.ceil((count - 1) / Math.max(1, size - 1)));
+}
+
+function dynamicLeaguePlan(participantCount, teamSize, rounds) {
+  const count = Math.max(0, Number(participantCount) || 0);
+  const size = Math.max(2, Number(teamSize) || 2);
+  let temporaryTeams = Math.floor(count / size);
+  if (temporaryTeams % 2 === 1) temporaryTeams -= 1;
+  temporaryTeams = Math.max(0, temporaryTeams);
+  const activePlayers = temporaryTeams * size;
+  return {
+    temporaryTeams,
+    activePlayers,
+    restingPlayers: Math.max(0, count - activePlayers),
+    matchesPerRound: Math.floor(temporaryTeams / 2),
+    totalMatches: Math.max(0, Number(rounds) || 0) * Math.floor(temporaryTeams / 2)
+  };
+}
+
+function dynamicLeagueRulesHtml(wizard, participantCount) {
+  const maxTeamSize = Math.max(2, Math.floor(participantCount / 2));
+  const plan = dynamicLeaguePlan(participantCount, wizard.dynamicTeamSize, wizard.dynamicRounds);
+  const label = wizard.dynamicTeamSize === 2 ? 'duplas' : wizard.dynamicTeamSize === 3 ? 'trios' : `times de ${wizard.dynamicTeamSize}`;
+  return `<section class="rule-section dynamic-rule-panel">
+    <div class="rule-section-head"><div><span class="section-number">R</span><div><h3>Equipes rotativas</h3><p>A liga soma pontos para cada jogador, mesmo que os companheiros mudem.</p></div></div></div>
+    <div class="grid cols-3">
+      <label class="field"><span>Jogadores por equipe</span><select id="wizardDynamicTeamSize">${Array.from({ length: Math.max(1, maxTeamSize - 1) }, (_, index) => index + 2).map((value) => `<option value="${value}" ${wizard.dynamicTeamSize === value ? 'selected' : ''}>${value} por lado (${value}v${value})</option>`).join('')}</select></label>
+      <label class="field"><span>Total de rodadas</span><input id="wizardDynamicRounds" type="number" min="1" max="100" value="${wizard.dynamicRounds}"><small>Sugestão para variar companheiros: ${recommendedDynamicRounds(participantCount, wizard.dynamicTeamSize)}.</small></label>
+      <label class="field"><span>Pontos por vitória</span><input id="wizardPointsWin" type="number" min="1" value="${wizard.pointsWin}"></label>
+    </div>
+    <div class="grid cols-2">
+      <label class="field"><span>Como formar os times</span><select id="wizardDynamicFormation">
+        <option value="balanced" ${wizard.dynamicFormation === 'balanced' ? 'selected' : ''}>Rotação equilibrada — evita repetir companheiros e adversários</option>
+        <option value="random" ${wizard.dynamicFormation === 'random' ? 'selected' : ''}>Sorteio novo em cada rodada</option>
+        <option value="blocks" ${wizard.dynamicFormation === 'blocks' ? 'selected' : ''}>Times fixos por algumas rodadas e depois novo sorteio</option>
+      </select></label>
+      ${wizard.dynamicFormation === 'blocks' ? `<label class="field"><span>Rodadas com a mesma formação</span><input id="wizardDynamicBlockRounds" type="number" min="1" max="${wizard.dynamicRounds}" value="${wizard.dynamicBlockRounds}"><small>Depois desse bloco, as equipes são montadas novamente.</small></label>` : `<label class="field"><span>Pontos por empate</span><input id="wizardPointsDraw" type="number" min="0" value="${wizard.pointsDraw}"></label>`}
+    </div>
+    ${wizard.dynamicFormation === 'blocks' ? `<label class="field compact-field"><span>Pontos por empate</span><input id="wizardPointsDraw" type="number" min="0" value="${wizard.pointsDraw}"></label>` : ''}
+    <div class="dynamic-plan">
+      <div><span>FORMAÇÃO</span><strong>${label}</strong></div>
+      <div><span>JOGOS POR RODADA</span><strong>${plan.matchesPerRound}</strong></div>
+      <div><span>JOGADORES EM DESCANSO</span><strong>${plan.restingPlayers}</strong></div>
+      <div><span>TOTAL DE JOGOS</span><strong>${plan.totalMatches}</strong></div>
+    </div>
+    <div class="notice info">Quando alguém descansar, o motor alterna as folgas para equilibrar a quantidade de partidas. Antes de registrar um resultado, você também poderá ajustar manualmente as formações.</div>
+    ${wizard.format === 'mixed' ? `<div class="phase-transition"><span>FASE FINAL</span><strong>Mata-mata individual (1v1)</strong><small>Os melhores jogadores da tabela individual avançam e entram na chave separadamente.</small></div>` : ''}
+  </section>`;
+}
+
 function ruleChoice(group, value, title, description, selected, symbol) {
   return `<label class="choice-card rule-choice ${selected === value ? 'selected' : ''}" data-rule-choice="${group}:${value}"><input type="radio" name="${group}" value="${value}" ${selected === value ? 'checked' : ''}><span class="choice-symbol">${symbol}</span><strong>${title}</strong><span>${description}</span></label>`;
 }
@@ -621,8 +704,12 @@ function bracketPlanHtml(plan, pairing) {
   return `<div class="bracket-plan"><div class="plan-icon">${plan.total}</div><div><strong>Como ${plan.total} classificados serão organizados</strong><span>${plan.preliminaryMatches} confronto(s) preliminar(es), ${plan.byes} folga(s) e ${plan.nextRoundSize} participantes na fase seguinte. ${pairingCopy}</span></div></div>`;
 }
 function wizardReviewHtml(wizard) {
-  const participants = wizard.mode === 'individual' ? wizard.entrants : wizard.teams;
-  const estimatedLeague = wizard.format === 'knockout' ? 0 : (participants.length * (participants.length - 1) / 2) * wizard.leagueLegs;
+  const participants = wizard.mode === 'teams' ? wizard.teams : wizard.entrants;
+  const estimatedLeague = wizard.format === 'knockout'
+    ? 0
+    : wizard.mode === 'dynamic'
+      ? dynamicLeaguePlan(participants.length, wizard.dynamicTeamSize, wizard.dynamicRounds).totalMatches
+      : (participants.length * (participants.length - 1) / 2) * wizard.leagueLegs;
   const knockoutTotal = wizard.format === 'mixed' ? wizard.qualifiers : participants.length;
   const plan = wizard.format === 'league' ? null : getBracketPlan(knockoutTotal);
   const profile = getGameProfile(wizard.gameProfile);
@@ -634,11 +721,18 @@ function wizardReviewHtml(wizard) {
       </div>
       <div class="review-grid">
         <div class="review-stat"><span>Participantes</span><strong>${participants.length}</strong></div>
+        <div class="review-stat"><span>Modelo</span><strong>${modeLabel(wizard.mode)}</strong></div>
         ${wizard.format !== 'knockout' ? `<div class="review-stat"><span>Jogos da liga</span><strong>${estimatedLeague}</strong></div>` : ''}
         ${wizard.format === 'mixed' ? `<div class="review-stat"><span>Classificados</span><strong>${wizard.qualifiers}</strong></div>` : ''}
         ${plan ? `<div class="review-stat"><span>Folgas iniciais</span><strong>${plan.byes}</strong></div>` : ''}
       </div>
       <div class="profile-review-strip game-${profile.id}"><div><span>PLACAR</span><strong>${profile.scoreLabel}</strong></div><div><span>ESCOLHA</span><strong>${profile.choiceLabel}</strong></div><div><span>ESTATÍSTICAS</span><strong>${profile.id === 'lol' ? 'K/D/A e KDA' : profile.id === 'fifa' ? 'Gols e times' : 'Pontos e finalizações'}</strong></div></div>
+      ${wizard.mode === 'dynamic' ? `<div class="panel"><div class="panel-body"><table class="stats-table"><tbody>
+        <tr><td>Formato das partidas da liga</td><td class="num"><strong>${wizard.dynamicTeamSize}v${wizard.dynamicTeamSize}</strong></td></tr>
+        <tr><td>Formação dos times</td><td class="num">${wizard.dynamicFormation === 'balanced' ? 'Rotação equilibrada' : wizard.dynamicFormation === 'random' ? 'Novo sorteio em cada rodada' : `Blocos de ${wizard.dynamicBlockRounds} rodada(s)`}</td></tr>
+        <tr><td>Classificação</td><td class="num">Individual; todos os integrantes recebem o resultado do time</td></tr>
+        ${wizard.format === 'mixed' ? '<tr><td>Fase final</td><td class="num"><strong>Individual (1v1)</strong></td></tr>' : ''}
+      </tbody></table></div></div>` : ''}
       ${wizard.format === 'mixed' ? `<div class="panel"><div class="panel-body"><table class="stats-table"><tbody>
         <tr><td>Cruzamento do mata-mata</td><td class="num"><strong>${wizard.knockoutPairing === 'seeded' ? 'Melhor contra pior' : 'Sorteio livre'}</strong></td></tr>
         <tr><td>Estrutura da chave</td><td class="num">${wizard.bracketMode === 'complete' ? 'Completa, sem folgas' : 'Adaptada, com folgas quando necessário'}</td></tr>
@@ -656,6 +750,7 @@ function bindWizardStepEvents() {
   }));
   $$('[data-format-choice]').forEach((choice) => choice.addEventListener('click', () => {
     wizard.format = choice.dataset.formatChoice;
+    if (wizard.format === 'knockout' && wizard.mode === 'dynamic') wizard.mode = 'individual';
     renderWizard();
   }));
   $$('[data-rule-choice]').forEach((choice) => choice.addEventListener('click', () => {
@@ -663,7 +758,7 @@ function bindWizardStepEvents() {
     if (group === 'knockout-pairing') wizard.knockoutPairing = value;
     if (group === 'bracket-mode') {
       wizard.bracketMode = value;
-      const total = wizard.mode === 'individual' ? wizard.entrants.length : wizard.teams.length;
+      const total = wizard.mode === 'teams' ? wizard.teams.length : wizard.entrants.length;
       if (value === 'complete' && !isPowerOfTwo(wizard.qualifiers)) {
         const options = fullBracketCounts(total);
         wizard.qualifiers = options[options.length - 1] || 2;
@@ -707,6 +802,24 @@ function bindWizardStepEvents() {
     if (team) team.members = team.members.filter((member) => member.id !== memberId);
     renderWizard();
   }));
+  $('#wizardDynamicTeamSize')?.addEventListener('change', () => {
+    wizard.dynamicTeamSize = Number($('#wizardDynamicTeamSize').value);
+    wizard.dynamicRounds = Math.max(wizard.dynamicRounds, recommendedDynamicRounds(wizard.entrants.length, wizard.dynamicTeamSize));
+    renderWizard();
+  });
+  $('#wizardDynamicFormation')?.addEventListener('change', () => {
+    wizard.dynamicFormation = $('#wizardDynamicFormation').value;
+    renderWizard();
+  });
+  $('#wizardDynamicRounds')?.addEventListener('change', () => {
+    wizard.dynamicRounds = Math.max(1, Number($('#wizardDynamicRounds').value) || 1);
+    renderWizard();
+  });
+  $('#wizardDynamicBlockRounds')?.addEventListener('change', () => {
+    wizard.dynamicBlockRounds = Math.max(1, Number($('#wizardDynamicBlockRounds').value) || 1);
+    renderWizard();
+  });
+
   $$('[data-qualifier-quick]').forEach((button) => button.addEventListener('click', () => {
     wizard.qualifiers = Number(button.dataset.qualifierQuick);
     renderWizard();
@@ -746,6 +859,10 @@ function captureWizardFields() {
   if ($('#wizardPointsDraw')) wizard.pointsDraw = Math.max(0, Number($('#wizardPointsDraw').value) || 0);
   if ($('#wizardQualifiers')) wizard.qualifiers = Number($('#wizardQualifiers').value);
   if ($('#wizardThirdPlace')) wizard.thirdPlace = $('#wizardThirdPlace').checked;
+  if ($('#wizardDynamicTeamSize')) wizard.dynamicTeamSize = Number($('#wizardDynamicTeamSize').value);
+  if ($('#wizardDynamicFormation')) wizard.dynamicFormation = $('#wizardDynamicFormation').value;
+  if ($('#wizardDynamicRounds')) wizard.dynamicRounds = Math.max(1, Number($('#wizardDynamicRounds').value) || 1);
+  if ($('#wizardDynamicBlockRounds')) wizard.dynamicBlockRounds = Math.max(1, Number($('#wizardDynamicBlockRounds').value) || 1);
 }
 
 function validateWizardStep(step) {
@@ -756,19 +873,28 @@ function validateWizardStep(step) {
     if (!['league','knockout','mixed'].includes(wizard.format)) return 'Escolha um formato válido.';
   }
   if (step === 2) {
-    if (wizard.mode === 'individual') {
-      wizard.entrants = wizard.entrants.map((item) => ({ ...item, name: item.name.trim() })).filter((item) => item.name);
-      if (wizard.entrants.length < 2) return 'Adicione pelo menos dois jogadores.';
-      if (wizard.entrants.length > 30) return 'Esta versão aceita até 30 jogadores por campeonato.';
-    } else {
+    if (wizard.mode === 'teams') {
       wizard.teams = wizard.teams.map((team) => ({ ...team, name: team.name.trim(), members: team.members.filter((member) => member.name.trim()) })).filter((team) => team.name);
       if (wizard.teams.length < 2) return 'Adicione pelo menos duas equipes.';
       if (wizard.teams.length > 30) return 'Esta versão aceita até 30 equipes por campeonato.';
       if (wizard.teams.some((team) => !team.members.length)) return 'Cada equipe precisa ter pelo menos um jogador.';
+    } else {
+      wizard.entrants = wizard.entrants.map((item) => ({ ...item, name: item.name.trim() })).filter((item) => item.name);
+      if (wizard.entrants.length < 2) return 'Adicione pelo menos dois jogadores.';
+      if (wizard.entrants.length > 30) return 'Esta versão aceita até 30 jogadores por campeonato.';
+      if (wizard.mode === 'dynamic' && wizard.format === 'knockout') return 'Equipes rotativas precisam de uma fase de liga. Escolha Liga ou Liga + mata-mata.';
     }
   }
+  if (step === 3 && wizard.mode === 'dynamic') {
+    const totalPlayers = wizard.entrants.length;
+    if (!Number.isInteger(wizard.dynamicTeamSize) || wizard.dynamicTeamSize < 2) return 'Escolha pelo menos dois jogadores por equipe.';
+    if (totalPlayers < wizard.dynamicTeamSize * 2) return `Para ${wizard.dynamicTeamSize}v${wizard.dynamicTeamSize}, adicione pelo menos ${wizard.dynamicTeamSize * 2} jogadores.`;
+    if (!['balanced','random','blocks'].includes(wizard.dynamicFormation)) return 'Escolha como as equipes temporárias serão formadas.';
+    if (!Number.isInteger(wizard.dynamicRounds) || wizard.dynamicRounds < 1) return 'Informe pelo menos uma rodada para a liga.';
+    if (wizard.dynamicFormation === 'blocks' && (!Number.isInteger(wizard.dynamicBlockRounds) || wizard.dynamicBlockRounds < 1 || wizard.dynamicBlockRounds > wizard.dynamicRounds)) return 'A duração do bloco deve ficar entre 1 e o total de rodadas.';
+  }
   if (step === 3 && wizard.format === 'mixed') {
-    const total = wizard.mode === 'individual' ? wizard.entrants.length : wizard.teams.length;
+    const total = wizard.mode === 'teams' ? wizard.teams.length : wizard.entrants.length;
     if (!Number.isInteger(wizard.qualifiers) || wizard.qualifiers < 2 || wizard.qualifiers > total) return `A quantidade de classificados deve ficar entre 2 e ${total}.`;
     if (wizard.bracketMode === 'complete' && !isPowerOfTwo(wizard.qualifiers)) return 'Na chave completa, escolha 2, 4, 8, 16... classificados. Para outra quantidade, use Chave adaptada.';
     if (!['draw','seeded'].includes(wizard.knockoutPairing)) return 'Escolha como os confrontos do mata-mata serão montados.';
@@ -779,13 +905,16 @@ function validateWizardStep(step) {
 function buildTournamentFromWizard() {
   const wizard = state.wizard;
   const profile = getGameProfile(wizard.gameProfile);
-  const participants = wizard.mode === 'individual'
-    ? wizard.entrants.map((entrant) => ({ id: uid(), name: entrant.name, players: [{ id: uid(), name: entrant.name }] }))
-    : wizard.teams.map((team) => ({ id: uid(), name: team.name, players: team.members.map((member) => ({ id: uid(), name: member.name })) }));
+  const participants = wizard.mode === 'teams'
+    ? wizard.teams.map((team) => ({ id: uid(), name: team.name, players: team.members.map((member) => ({ id: uid(), name: member.name })) }))
+    : wizard.entrants.map((entrant) => {
+        const participantId = uid();
+        return { id: participantId, name: entrant.name, players: [{ id: wizard.mode === 'dynamic' ? participantId : uid(), name: entrant.name }] };
+      });
 
   const tournament = {
     id: uid(),
-    version: 6,
+    version: 9,
     name: wizard.name,
     gameProfile: profile.id,
     game: profile.label,
@@ -800,7 +929,12 @@ function buildTournamentFromWizard() {
       qualifiers: wizard.format === 'mixed' ? wizard.qualifiers : null,
       knockoutPairing: wizard.format === 'mixed' ? wizard.knockoutPairing : 'draw',
       bracketMode: wizard.format === 'mixed' ? wizard.bracketMode : 'flexible',
-      thirdPlace: wizard.thirdPlace
+      thirdPlace: wizard.thirdPlace,
+      dynamicTeamSize: wizard.mode === 'dynamic' ? wizard.dynamicTeamSize : 2,
+      dynamicFormation: wizard.mode === 'dynamic' ? wizard.dynamicFormation : 'balanced',
+      dynamicRounds: wizard.mode === 'dynamic' ? wizard.dynamicRounds : 0,
+      dynamicBlockRounds: wizard.mode === 'dynamic' ? wizard.dynamicBlockRounds : 1,
+      knockoutUnit: wizard.mode === 'dynamic' ? 'individual' : wizard.mode
     },
     matches: [],
     knockoutState: { started: wizard.format === 'knockout', currentRound: 0, pendingByes: [], initialByes: [], pairing: wizard.format === 'mixed' ? wizard.knockoutPairing : 'draw', seeded: wizard.format === 'mixed' && wizard.knockoutPairing === 'seeded' },
@@ -812,7 +946,9 @@ function buildTournamentFromWizard() {
 
   const ids = participants.map((item) => item.id);
   if (wizard.format === 'league' || wizard.format === 'mixed') {
-    tournament.matches = createRoundRobin(shuffle(ids), wizard.leagueLegs, tournament);
+    tournament.matches = wizard.mode === 'dynamic'
+      ? createDynamicTeamLeague(tournament)
+      : createRoundRobin(shuffle(ids), wizard.leagueLegs, tournament);
   } else {
     beginKnockout(tournament, shuffle(ids), 'draw');
   }
@@ -829,16 +965,19 @@ function shuffle(values) {
 }
 
 function createMatch(tournament, data) {
-  const home = participantById(tournament, data.homeId);
-  const away = participantById(tournament, data.awayId);
+  const matchId = data.id || uid();
+  const homeId = data.homeId || (data.dynamicTeam ? `${matchId}-home` : null);
+  const awayId = data.awayId || (data.dynamicTeam ? `${matchId}-away` : null);
+  const home = participantById(tournament, homeId);
+  const away = participantById(tournament, awayId);
   return {
-    id: uid(),
+    id: matchId,
     stage: data.stage,
     round: data.round,
     roundName: data.roundName,
     bracketRound: data.bracketRound || null,
-    homeId: data.homeId || null,
-    awayId: data.awayId || null,
+    homeId,
+    awayId,
     homeScore: null,
     awayScore: null,
     winnerId: null,
@@ -853,8 +992,11 @@ function createMatch(tournament, data) {
     finishType: '',
     mvpPlayerId: '',
     notes: '',
-    homeLineup: home?.players.map((player) => player.id) || [],
-    awayLineup: away?.players.map((player) => player.id) || []
+    dynamicTeam: Boolean(data.dynamicTeam),
+    homeLabel: data.homeLabel || '',
+    awayLabel: data.awayLabel || '',
+    homeLineup: data.homeLineup || home?.players.map((player) => player.id) || [],
+    awayLineup: data.awayLineup || away?.players.map((player) => player.id) || []
   };
 }
 
@@ -888,6 +1030,196 @@ function createRoundRobin(ids, legs, tournament) {
     matches.push(...returnMatches);
   }
   return matches;
+}
+
+function playerIdentity(tournament, playerId) {
+  for (const participant of tournament.participants || []) {
+    const player = (participant.players || []).find((item) => item.id === playerId);
+    if (player) return { ...player, participantId: participant.id, participantName: participant.name };
+  }
+  const participant = participantById(tournament, playerId);
+  return participant ? { id: participant.id, name: participant.name, participantId: participant.id, participantName: participant.name } : null;
+}
+
+function matchSideParticipant(tournament, match, side) {
+  const sideId = side === 'home' ? match.homeId : match.awayId;
+  const participant = participantById(tournament, sideId);
+  if (participant) return participant;
+  const lineup = side === 'home' ? match.homeLineup || [] : match.awayLineup || [];
+  const players = lineup.map((id) => playerIdentity(tournament, id)).filter(Boolean).map((player) => ({ id: player.id, name: player.name }));
+  const fallback = side === 'home' ? match.homeLabel : match.awayLabel;
+  const teamLabel = players.map((player) => player.name).join(' + ') || fallback || 'A definir';
+  return { id: sideId, name: teamLabel, players };
+}
+
+function matchSideName(tournament, match, side) {
+  return matchSideParticipant(tournament, match, side).name;
+}
+
+function pairKey(a, b) {
+  return [String(a), String(b)].sort().join('|');
+}
+
+function countPair(map, a, b) {
+  return map.get(pairKey(a, b)) || 0;
+}
+
+function incrementPair(map, a, b) {
+  const key = pairKey(a, b);
+  map.set(key, (map.get(key) || 0) + 1);
+}
+
+function activePlayersForDynamicRound(playerIds, activeCount, appearances) {
+  const randomized = shuffle(playerIds);
+  randomized.sort((a, b) => (appearances.get(a) || 0) - (appearances.get(b) || 0));
+  return randomized.slice(0, activeCount);
+}
+
+function teamRepeatCost(team, teammateCounts) {
+  let cost = 0;
+  for (let i = 0; i < team.length; i += 1) {
+    for (let j = i + 1; j < team.length; j += 1) cost += countPair(teammateCounts, team[i], team[j]) * 20;
+  }
+  return cost;
+}
+
+function opponentRepeatCost(teamA, teamB, opponentCounts) {
+  let cost = 0;
+  for (const a of teamA) for (const b of teamB) cost += countPair(opponentCounts, a, b) * 5;
+  return cost;
+}
+
+function buildBalancedTeams(activeIds, teamSize, teammateCounts) {
+  let best = null;
+  let bestCost = Number.POSITIVE_INFINITY;
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const pool = shuffle(activeIds);
+    const teams = [];
+    while (pool.length) {
+      const team = [pool.shift()];
+      while (team.length < teamSize && pool.length) {
+        let selectedIndex = 0;
+        let selectedCost = Number.POSITIVE_INFINITY;
+        for (let index = 0; index < pool.length; index += 1) {
+          const candidate = pool[index];
+          const cost = team.reduce((sum, member) => sum + countPair(teammateCounts, member, candidate) * 20, 0) + Math.random();
+          if (cost < selectedCost) {
+            selectedCost = cost;
+            selectedIndex = index;
+          }
+        }
+        team.push(pool.splice(selectedIndex, 1)[0]);
+      }
+      teams.push(team);
+    }
+    const cost = teams.reduce((sum, team) => sum + teamRepeatCost(team, teammateCounts), 0);
+    if (cost < bestCost) {
+      best = teams;
+      bestCost = cost;
+    }
+  }
+  return best || [];
+}
+
+function pairDynamicTeams(teams, opponentCounts, roundOffset = null) {
+  if (roundOffset !== null && teams.length > 2) {
+    const rotation = [...teams];
+    const turns = Math.max(1, teams.length - 1);
+    for (let index = 0; index < (roundOffset % turns); index += 1) rotation.splice(1, 0, rotation.pop());
+    const pairs = [];
+    for (let index = 0; index < rotation.length / 2; index += 1) pairs.push([rotation[index], rotation[rotation.length - 1 - index]]);
+    return pairs;
+  }
+  let best = null;
+  let bestCost = Number.POSITIVE_INFINITY;
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const shuffled = shuffle(teams);
+    const pairs = [];
+    let cost = 0;
+    for (let index = 0; index < shuffled.length; index += 2) {
+      const pair = [shuffled[index], shuffled[index + 1]];
+      pairs.push(pair);
+      cost += opponentRepeatCost(pair[0], pair[1], opponentCounts);
+    }
+    if (cost < bestCost) {
+      best = pairs;
+      bestCost = cost;
+    }
+  }
+  return best || [];
+}
+
+function updateDynamicHistory(pairs, teammateCounts, opponentCounts, appearances) {
+  for (const [homeTeam, awayTeam] of pairs) {
+    for (const member of [...homeTeam, ...awayTeam]) appearances.set(member, (appearances.get(member) || 0) + 1);
+    for (const team of [homeTeam, awayTeam]) {
+      for (let i = 0; i < team.length; i += 1) {
+        for (let j = i + 1; j < team.length; j += 1) incrementPair(teammateCounts, team[i], team[j]);
+      }
+    }
+    for (const home of homeTeam) for (const away of awayTeam) incrementPair(opponentCounts, home, away);
+  }
+}
+
+function createDynamicTeamLeague(tournament) {
+  const playerIds = tournament.participants.map((participant) => participant.players?.[0]?.id || participant.id);
+  const teamSize = Math.max(2, Number(tournament.settings.dynamicTeamSize) || 2);
+  const rounds = Math.max(1, Number(tournament.settings.dynamicRounds) || recommendedDynamicRounds(playerIds.length, teamSize));
+  const formation = tournament.settings.dynamicFormation || 'balanced';
+  const blockRounds = Math.max(1, Number(tournament.settings.dynamicBlockRounds) || 2);
+  const plan = dynamicLeaguePlan(playerIds.length, teamSize, rounds);
+  if (plan.matchesPerRound < 1) throw new Error(`São necessários pelo menos ${teamSize * 2} jogadores para partidas ${teamSize}v${teamSize}.`);
+
+  const teammateCounts = new Map();
+  const opponentCounts = new Map();
+  const appearances = new Map(playerIds.map((id) => [id, 0]));
+  const matches = [];
+  let blockTeams = null;
+  let blockStart = 0;
+
+  for (let round = 0; round < rounds; round += 1) {
+    const startsNewBlock = formation !== 'blocks' || !blockTeams || round - blockStart >= blockRounds;
+    if (startsNewBlock) {
+      const active = activePlayersForDynamicRound(playerIds, plan.activePlayers, appearances);
+      blockTeams = formation === 'random'
+        ? chunk(shuffle(active), teamSize)
+        : buildBalancedTeams(active, teamSize, teammateCounts);
+      blockStart = round;
+    }
+
+    let teams;
+    if (formation === 'blocks') {
+      teams = blockTeams.map((team) => [...team]);
+    } else {
+      const active = activePlayersForDynamicRound(playerIds, plan.activePlayers, appearances);
+      teams = formation === 'random'
+        ? chunk(shuffle(active), teamSize)
+        : buildBalancedTeams(active, teamSize, teammateCounts);
+    }
+
+    const pairs = pairDynamicTeams(teams, opponentCounts, formation === 'blocks' ? round - blockStart : null);
+    updateDynamicHistory(pairs, teammateCounts, opponentCounts, appearances);
+
+    pairs.forEach(([homeLineup, awayLineup], index) => {
+      matches.push(createMatch(tournament, {
+        stage: 'league',
+        round: round + 1,
+        roundName: `Rodada ${round + 1} · ${teamSize}v${teamSize}`,
+        dynamicTeam: true,
+        homeLineup,
+        awayLineup,
+        homeLabel: `Time ${String.fromCharCode(65 + index * 2)}`,
+        awayLabel: `Time ${String.fromCharCode(66 + index * 2)}`
+      }));
+    });
+  }
+  return matches;
+}
+
+function chunk(values, size) {
+  const groups = [];
+  for (let index = 0; index < values.length; index += size) groups.push(values.slice(index, index + size));
+  return groups.filter((group) => group.length === size);
 }
 
 function highestPowerOfTwoAtMost(value) {
@@ -986,26 +1318,45 @@ function standings(tournament) {
   const rows = Object.fromEntries(tournament.participants.map((participant) => [participant.id, {
     id: participant.id, pj: 0, v: 0, e: 0, d: 0, gp: 0, gc: 0, sg: 0, pts: 0
   }]));
+
+  const applyResult = (row, ownScore, opponentScore, result) => {
+    if (!row) return;
+    row.pj += 1;
+    row.gp += ownScore;
+    row.gc += opponentScore;
+    if (result === 'v') {
+      row.v += 1;
+      row.pts += tournament.settings.pointsWin;
+    } else if (result === 'd') {
+      row.d += 1;
+    } else {
+      row.e += 1;
+      row.pts += tournament.settings.pointsDraw;
+    }
+  };
+
   for (const match of leagueMatches(tournament)) {
     if (!match.played || !match.homeId || !match.awayId) continue;
-    const home = rows[match.homeId];
-    const away = rows[match.awayId];
-    if (!home || !away) continue;
     const homeScore = Number(match.homeScore || 0);
     const awayScore = Number(match.awayScore || 0);
     const winner = matchWinner(match);
-    home.pj += 1; away.pj += 1;
-    home.gp += homeScore; home.gc += awayScore;
-    away.gp += awayScore; away.gc += homeScore;
-    if (winner === home.id) {
-      home.v += 1; away.d += 1; home.pts += tournament.settings.pointsWin;
-    } else if (winner === away.id) {
-      away.v += 1; home.d += 1; away.pts += tournament.settings.pointsWin;
-    } else {
-      home.e += 1; away.e += 1;
-      home.pts += tournament.settings.pointsDraw;
-      away.pts += tournament.settings.pointsDraw;
+    const homeResult = winner === match.homeId ? 'v' : winner === match.awayId ? 'd' : 'e';
+    const awayResult = winner === match.awayId ? 'v' : winner === match.homeId ? 'd' : 'e';
+
+    if (tournament.mode === 'dynamic' || match.dynamicTeam) {
+      for (const playerId of match.homeLineup || []) {
+        const identity = playerIdentity(tournament, playerId);
+        applyResult(rows[identity?.participantId || playerId], homeScore, awayScore, homeResult);
+      }
+      for (const playerId of match.awayLineup || []) {
+        const identity = playerIdentity(tournament, playerId);
+        applyResult(rows[identity?.participantId || playerId], awayScore, homeScore, awayResult);
+      }
+      continue;
     }
+
+    applyResult(rows[match.homeId], homeScore, awayScore, homeResult);
+    applyResult(rows[match.awayId], awayScore, homeScore, awayResult);
   }
   Object.values(rows).forEach((row) => { row.sg = row.gp - row.gc; });
   return Object.values(rows).sort((a, b) =>
@@ -1093,7 +1444,9 @@ function rerollTournament(tournament) {
   if (playedMatches(tournament) > 0) throw new Error('Não é possível sortear novamente depois de registrar resultados.');
   tournament.championId = null;
   if (tournament.format === 'league' || tournament.format === 'mixed') {
-    tournament.matches = createRoundRobin(shuffle(tournament.participants.map((item) => item.id)), tournament.settings.leagueLegs, tournament);
+    tournament.matches = tournament.mode === 'dynamic'
+      ? createDynamicTeamLeague(tournament)
+      : createRoundRobin(shuffle(tournament.participants.map((item) => item.id)), tournament.settings.leagueLegs, tournament);
     tournament.knockoutState = { started: false, currentRound: 0, pendingByes: [], initialByes: [], pairing: tournament.settings.knockoutPairing || 'draw', seeded: tournament.settings.knockoutPairing === 'seeded' };
   } else {
     tournament.matches = [];
@@ -1116,7 +1469,7 @@ function renderTournamentDetail() {
         <button class="button small ghost" data-back-list>← Voltar aos campeonatos</button>
         <div class="game-kicker">${escapeHtml(profile.label)} · ${formatLabel(tournament.format)}</div>
         <h2>${escapeHtml(tournament.name)}</h2>
-        <div class="detail-meta"><span class="format-badge">${modeLabel(tournament.mode)}</span><span class="format-badge">${tournament.participants.length} participantes</span><span class="format-badge">${playedMatches(tournament)}/${playableMatches(tournament)} jogos</span></div>
+        <div class="detail-meta"><span class="format-badge">${modeLabel(tournament.mode)}</span><span class="format-badge">${tournament.participants.length} ${tournament.mode === 'teams' ? 'equipes' : 'jogadores'}</span><span class="format-badge">${playedMatches(tournament)}/${playableMatches(tournament)} jogos</span></div>
       </div>
       <div class="detail-actions">
         ${playedMatches(tournament) === 0 ? '<button class="button secondary" data-reroll>Sortear novamente</button>' : ''}
@@ -1202,8 +1555,8 @@ function choiceIdentityHtml(name = '', image = '', compact = false) {
 }
 
 function matchRowHtml(tournament, match, index) {
-  const home = participantName(tournament, match.homeId);
-  const away = participantName(tournament, match.awayId);
+  const home = matchSideName(tournament, match, 'home');
+  const away = matchSideName(tournament, match, 'away');
   const profile = getGameProfile(tournament);
   return `<div class="match-row ${match.played ? 'played' : ''} ${match.isBye ? 'bye' : ''}">
     <div class="match-code">J${String(index + 1).padStart(2,'0')}</div>
@@ -1220,7 +1573,7 @@ function standingsTabHtml(tournament) {
   const rows = standings(tournament);
   const qualifiers = tournament.format === 'mixed' ? tournament.settings.qualifiers : 0;
   const profile = getGameProfile(tournament);
-  return `<div class="panel standings-panel ${gameProfileClass(tournament)}"><div class="panel-head standings-title"><div><span class="panel-kicker">TABELA DA COMPETIÇÃO</span><h3>Classificação</h3><p>${tournament.format === 'mixed' ? `Os ${qualifiers} primeiros avançam ao mata-mata.` : 'Tabela completa da liga.'}</p></div><div class="legend"><span class="legend-qualified"></span> Zona de classificação</div></div><div class="table-wrap"><table class="stats-table standings-table"><thead><tr><th>#</th><th>Participante</th><th class="num">J</th><th class="num">V</th><th class="num">E</th><th class="num">D</th><th class="num">${profile.scoreShort}+</th><th class="num">${profile.scoreShort}-</th><th class="num">SALDO</th><th class="num">PTS</th></tr></thead><tbody>${rows.map((row,index) => `<tr class="${qualifiers && index < qualifiers ? 'qualified' : ''} ${qualifiers && index === qualifiers - 1 ? 'cut-line' : ''}"><td class="rank"><span>${index + 1}</span></td><td><strong>${escapeHtml(participantName(tournament,row.id))}</strong></td><td class="num">${row.pj}</td><td class="num win-cell">${row.v}</td><td class="num">${row.e}</td><td class="num loss-cell">${row.d}</td><td class="num">${row.gp}</td><td class="num">${row.gc}</td><td class="num">${row.sg}</td><td class="num points-cell"><strong>${row.pts}</strong></td></tr>`).join('')}</tbody></table></div></div>`;
+  return `<div class="panel standings-panel ${gameProfileClass(tournament)}"><div class="panel-head standings-title"><div><span class="panel-kicker">TABELA DA COMPETIÇÃO</span><h3>Classificação</h3><p>${tournament.mode === 'dynamic' ? `Classificação individual: cada integrante recebe o resultado da equipe temporária.${tournament.format === 'mixed' ? ` Os ${qualifiers} primeiros avançam ao 1v1.` : ''}` : tournament.format === 'mixed' ? `Os ${qualifiers} primeiros avançam ao mata-mata.` : 'Tabela completa da liga.'}</p></div><div class="legend"><span class="legend-qualified"></span> Zona de classificação</div></div><div class="table-wrap"><table class="stats-table standings-table"><thead><tr><th>#</th><th>Participante</th><th class="num">J</th><th class="num">V</th><th class="num">E</th><th class="num">D</th><th class="num">${profile.scoreShort}+</th><th class="num">${profile.scoreShort}-</th><th class="num">SALDO</th><th class="num">PTS</th></tr></thead><tbody>${rows.map((row,index) => `<tr class="${qualifiers && index < qualifiers ? 'qualified' : ''} ${qualifiers && index === qualifiers - 1 ? 'cut-line' : ''}"><td class="rank"><span>${index + 1}</span></td><td><strong>${escapeHtml(participantName(tournament,row.id))}</strong></td><td class="num">${row.pj}</td><td class="num win-cell">${row.v}</td><td class="num">${row.e}</td><td class="num loss-cell">${row.d}</td><td class="num">${row.gp}</td><td class="num">${row.gc}</td><td class="num">${row.sg}</td><td class="num points-cell"><strong>${row.pts}</strong></td></tr>`).join('')}</tbody></table></div></div>`;
 }
 
 
@@ -1713,7 +2066,7 @@ function tournamentRecords(tournament) {
 
 function matchRecordName(tournament, match) {
   if (!match) return '—';
-  return `${participantName(tournament,match.homeId)} ${match.homeScore} × ${match.awayScore} ${participantName(tournament,match.awayId)}`;
+  return `${matchSideName(tournament,match,'home')} ${match.homeScore} × ${match.awayScore} ${matchSideName(tournament,match,'away')}`;
 }
 
 function statisticsTabHtml(tournament) {
@@ -1752,7 +2105,7 @@ function statisticsTabHtml(tournament) {
         <div class="table-wrap"><table class="stats-table"><thead><tr><th>Jogador</th>${tournament.mode === 'teams' ? '<th>Equipe</th>' : ''}<th class="num">J</th><th class="num">V</th><th class="num">D</th><th class="num">WR</th>${profile.id === 'lol' ? '<th class="num">K</th><th class="num">D</th><th class="num">A</th><th class="num">KDA</th>' : `<th class="num">${profile.scoreShort}+</th><th class="num">${profile.scoreShort}-</th>`}<th class="num">MVP</th></tr></thead><tbody>${players.map((row)=>`<tr><td><strong>${escapeHtml(row.name)}</strong></td>${tournament.mode === 'teams' ? `<td>${escapeHtml(row.team)}</td>` : ''}<td class="num">${row.pj}</td><td class="num win-cell">${row.v}</td><td class="num loss-cell">${row.d}</td><td class="num">${row.winRate.toFixed(1)}%</td>${profile.id === 'lol' ? `<td class="num">${row.kills}</td><td class="num">${row.deaths}</td><td class="num">${row.assists}</td><td class="num">${row.kda.toFixed(2)}</td>` : `<td class="num">${row.gp}</td><td class="num">${row.gc}</td>`}<td class="num">${row.mvp}</td></tr>`).join('')}</tbody></table></div>
       </section>
     </div>
-    <section class="panel"><div class="panel-head"><div><span class="panel-kicker">ELENCO</span><h3>Participantes do campeonato</h3></div></div><div class="panel-body"><div class="participant-roster">${tournament.participants.map((participant,index)=>`<div class="roster-card"><span>${String(index+1).padStart(2,'0')}</span><div><strong>${escapeHtml(participant.name)}</strong>${tournament.mode === 'teams' ? `<small>${participant.players.map((p)=>escapeHtml(p.name)).join(' · ')}</small>` : ''}</div></div>`).join('')}</div></div></section>
+    <section class="panel"><div class="panel-head"><div><span class="panel-kicker">ELENCO</span><h3>${tournament.mode === 'dynamic' ? 'Jogadores da rotação' : 'Participantes do campeonato'}</h3>${tournament.mode === 'dynamic' ? '<p>Os parceiros mudam, mas a campanha e a classificação pertencem a cada jogador.</p>' : ''}</div></div><div class="panel-body"><div class="participant-roster">${tournament.participants.map((participant,index)=>`<div class="roster-card"><span>${String(index+1).padStart(2,'0')}</span><div><strong>${escapeHtml(participant.name)}</strong>${tournament.mode === 'teams' ? `<small>${participant.players.map((p)=>escapeHtml(p.name)).join(' · ')}</small>` : tournament.mode === 'dynamic' ? '<small>Classificação individual</small>' : ''}</div></div>`).join('')}</div></div></section>
   </div>`;
 }
 
@@ -1769,8 +2122,14 @@ function settingsTabHtml(tournament) {
     <tr><td>Formato</td><td class="num"><strong>${formatLabel(tournament.format)}</strong></td></tr>
     <tr><td>Modo</td><td class="num">${modeLabel(tournament.mode)}</td></tr>
     <tr><td>Participantes</td><td class="num">${tournament.participants.length}</td></tr>
-    ${tournament.format !== 'knockout' ? `<tr><td>Turnos da liga</td><td class="num">${tournament.settings.leagueLegs}</td></tr><tr><td>Pontos por vitória</td><td class="num">${tournament.settings.pointsWin}</td></tr><tr><td>Pontos por empate</td><td class="num">${tournament.settings.pointsDraw}</td></tr>` : ''}
-    ${tournament.format === 'mixed' ? `<tr><td>Classificados</td><td class="num">${tournament.settings.qualifiers}</td></tr><tr><td>Cruzamento do mata-mata</td><td class="num">${tournament.settings.knockoutPairing === 'seeded' ? 'Melhor contra pior' : 'Sorteio livre'}</td></tr><tr><td>Estrutura da chave</td><td class="num">${tournament.settings.bracketMode === 'complete' ? 'Completa, sem folgas' : 'Adaptada'}</td></tr>` : ''}
+    ${tournament.format !== 'knockout' ? tournament.mode === 'dynamic'
+      ? `<tr><td>Formato das equipes</td><td class="num"><strong>${tournament.settings.dynamicTeamSize}v${tournament.settings.dynamicTeamSize}</strong></td></tr>
+         <tr><td>Formação</td><td class="num">${tournament.settings.dynamicFormation === 'balanced' ? 'Rotação equilibrada' : tournament.settings.dynamicFormation === 'random' ? 'Sorteio em cada rodada' : `Blocos de ${tournament.settings.dynamicBlockRounds} rodada(s)`}</td></tr>
+         <tr><td>Rodadas da liga</td><td class="num">${tournament.settings.dynamicRounds}</td></tr>
+         <tr><td>Unidade da classificação</td><td class="num"><strong>Jogador individual</strong></td></tr>
+         <tr><td>Pontos por vitória</td><td class="num">${tournament.settings.pointsWin}</td></tr><tr><td>Pontos por empate</td><td class="num">${tournament.settings.pointsDraw}</td></tr>`
+      : `<tr><td>Turnos da liga</td><td class="num">${tournament.settings.leagueLegs}</td></tr><tr><td>Pontos por vitória</td><td class="num">${tournament.settings.pointsWin}</td></tr><tr><td>Pontos por empate</td><td class="num">${tournament.settings.pointsDraw}</td></tr>` : ''}
+    ${tournament.format === 'mixed' ? `<tr><td>Classificados</td><td class="num">${tournament.settings.qualifiers}</td></tr><tr><td>Cruzamento do mata-mata</td><td class="num">${tournament.settings.knockoutPairing === 'seeded' ? 'Melhor contra pior' : 'Sorteio livre'}</td></tr><tr><td>Estrutura da chave</td><td class="num">${tournament.settings.bracketMode === 'complete' ? 'Completa, sem folgas' : 'Adaptada'}</td></tr>${tournament.mode === 'dynamic' ? '<tr><td>Formato da fase final</td><td class="num"><strong>Individual (1v1)</strong></td></tr>' : ''}` : ''}
   </tbody></table></div></div>`;
 }
 
@@ -1893,10 +2252,12 @@ function openMatchModal(tournamentId, matchId) {
   const tournament = tournamentById(tournamentId);
   const match = tournament?.matches.find((item) => item.id === matchId);
   if (!tournament || !match) return;
-  const home = participantById(tournament, match.homeId);
-  const away = participantById(tournament, match.awayId);
+  const home = matchSideParticipant(tournament, match, 'home');
+  const away = matchSideParticipant(tournament, match, 'away');
   const knockout = match.stage === 'knockout' || match.stage === 'third';
-  const possibleMvp = [...(home?.players || []), ...(away?.players || [])];
+  const possibleMvp = tournament.mode === 'dynamic' && match.stage === 'league'
+    ? tournament.participants.flatMap((participant) => participant.players || [])
+    : [...(home?.players || []), ...(away?.players || [])];
   const profile = getGameProfile(tournament);
 
   openModal(`
@@ -1905,6 +2266,7 @@ function openMatchModal(tournamentId, matchId) {
       <div class="modal-body stack game-match-form ${gameProfileClass(tournament)}">
         ${matchGameFieldsHtml(tournament,match,home,away,knockout)}
         ${tournament.mode === 'teams' ? `<div class="grid cols-2">${lineupHtml(home,match.homeLineup,'home')}${lineupHtml(away,match.awayLineup,'away')}</div>` : ''}
+        ${tournament.mode === 'dynamic' && match.stage === 'league' ? dynamicLineupHtml(tournament, match) : ''}
         <div class="grid cols-2"><label class="field"><span>MVP da partida</span><select id="matchMvp"><option value="">Nenhum</option>${possibleMvp.map((player) => `<option value="${player.id}" ${match.mvpPlayerId === player.id ? 'selected' : ''}>${escapeHtml(player.name)}</option>`).join('')}</select></label><label class="field"><span>Observações</span><textarea id="matchNotes" placeholder="Anotações opcionais sobre a partida">${escapeHtml(match.notes || '')}</textarea></label></div>
       </div>
       <div class="modal-foot"><div>${match.played ? '<button class="button danger" type="button" data-clear-result>Limpar resultado</button>' : ''}</div><div style="display:flex;gap:8px"><button class="button ghost" type="button" data-close>Cancelar</button><button class="button primary" type="submit">Salvar resultado</button></div></div>
@@ -1962,6 +2324,16 @@ function openMatchModal(tournamentId, matchId) {
       match.awayLineup = $$('[name="awayLineup"]:checked').map((input) => input.value);
       if (!match.homeLineup.length || !match.awayLineup.length) return toast('Selecione pelo menos um jogador em cada escalação.', 'error');
     }
+    if (tournament.mode === 'dynamic' && match.stage === 'league') {
+      const teamSize = Number(tournament.settings.dynamicTeamSize || 2);
+      const homeLineup = $$('[name="homeDynamicLineup"]:checked').map((input) => input.value);
+      const awayLineup = $$('[name="awayDynamicLineup"]:checked').map((input) => input.value);
+      if (homeLineup.length !== teamSize || awayLineup.length !== teamSize) return toast(`Selecione exatamente ${teamSize} jogadores em cada lado.`, 'error');
+      if (homeLineup.some((id) => awayLineup.includes(id))) return toast('O mesmo jogador não pode atuar pelos dois lados.', 'error');
+      match.homeLineup = homeLineup;
+      match.awayLineup = awayLineup;
+      if (match.mvpPlayerId && ![...homeLineup, ...awayLineup].includes(match.mvpPlayerId)) return toast('O MVP precisa estar em uma das equipes desta partida.', 'error');
+    }
     updateLeagueChampion(tournament);
     if (match.stage === 'knockout') advanceKnockout(tournament);
     try {
@@ -1975,6 +2347,20 @@ function openMatchModal(tournamentId, matchId) {
 
 function lineupHtml(participant, selected, side) {
   return `<div class="lineup-box"><h4>Escalação — ${escapeHtml(participant.name)}</h4><div class="check-list">${participant.players.map((player) => `<label class="check-row"><input type="checkbox" name="${side}Lineup" value="${player.id}" ${(selected || []).includes(player.id) ? 'checked' : ''}> ${escapeHtml(player.name)}</label>`).join('')}</div></div>`;
+}
+
+
+function dynamicLineupHtml(tournament, match) {
+  const teamSize = Number(tournament.settings.dynamicTeamSize || 2);
+  const players = tournament.participants.flatMap((participant) => participant.players || []);
+  const side = (name, selected, inputName) => `<div class="lineup-box dynamic-lineup-box">
+    <div class="dynamic-lineup-head"><div><span>EQUIPE TEMPORÁRIA</span><h4>${name}</h4></div><strong>${teamSize} jogadores</strong></div>
+    <div class="dynamic-player-grid">${players.map((player) => `<label class="dynamic-player-option ${(selected || []).includes(player.id) ? 'selected' : ''}"><input type="checkbox" name="${inputName}" value="${player.id}" ${(selected || []).includes(player.id) ? 'checked' : ''}><span>${escapeHtml(player.name)}</span></label>`).join('')}</div>
+  </div>`;
+  return `<section class="dynamic-lineup-editor">
+    <div class="dynamic-editor-title"><div><span>FORMAÇÕES DA RODADA</span><h3>Times sorteados</h3></div><p>O gerador montou as equipes, mas você pode trocar qualquer jogador antes de salvar o resultado.</p></div>
+    <div class="grid cols-2">${side('Lado A', match.homeLineup, 'homeDynamicLineup')}${side('Lado B', match.awayLineup, 'awayDynamicLineup')}</div>
+  </section>`;
 }
 
 function truncateKnockoutAfter(tournament, round) {
