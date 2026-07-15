@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0a1020">
+  <title>Arena Maker — Gestão de Campeonatos</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+  <div id="authScreen" class="auth-screen hidden">
+    <div class="auth-card">
+      <div class="brand brand-auth">
+        <div class="brand-mark">AM</div>
+        <div>
+          <strong>Arena Maker</strong>
+          <span>Gestão de campeonatos</span>
+        </div>
+      </div>
+      <div class="auth-copy">
+        <span class="eyebrow">ACESSO SEGURO</span>
+        <h1>Seus campeonatos, jogadores e estatísticas em um só lugar.</h1>
+        <p>Entre por link mágico. Não é necessário criar senha.</p>
+      </div>
+      <form id="loginForm" class="stack">
+        <label class="field">
+          <span>E-mail</span>
+          <input id="loginEmail" type="email" autocomplete="email" placeholder="voce@email.com" required>
+        </label>
+        <button class="button primary wide" type="submit">Enviar link de acesso</button>
+        <button id="continueLocalBtn" class="button ghost wide" type="button">Continuar em modo local</button>
+      </form>
+      <p id="authMessage" class="form-message"></p>
+    </div>
+  </div>
+
+  <div id="appShell" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">AM</div>
+        <div>
+          <strong>Arena Maker</strong>
+          <span>Competition Hub</span>
+        </div>
+      </div>
+
+      <nav class="nav" aria-label="Navegação principal">
+        <button class="nav-item active" data-view="dashboard">
+          <span class="nav-icon">▦</span><span>Visão geral</span>
+        </button>
+        <button class="nav-item" data-view="players">
+          <span class="nav-icon">◉</span><span>Jogadores</span>
+        </button>
+        <button class="nav-item" data-view="tournaments">
+          <span class="nav-icon">◇</span><span>Campeonatos</span>
+        </button>
+        <button class="nav-item" data-view="importer">
+          <span class="nav-icon">⇧</span><span>Publicar ZIP</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div id="syncStatus" class="sync-card">
+          <span class="status-dot"></span>
+          <div>
+            <strong>Modo local</strong>
+            <span>Dados neste navegador</span>
+          </div>
+        </div>
+        <button id="logoutBtn" class="text-button hidden">Sair da conta</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <span class="eyebrow" id="viewEyebrow">PAINEL</span>
+          <h1 id="viewTitle">Visão geral</h1>
+        </div>
+        <div class="top-actions">
+          <button id="newPlayerQuickBtn" class="button secondary">Novo jogador</button>
+          <button id="newTournamentBtn" class="button primary">Novo campeonato</button>
+        </div>
+      </header>
+
+      <section id="view-dashboard" class="view active"></section>
+      <section id="view-players" class="view"></section>
+      <section id="view-tournaments" class="view"></section>
+      <section id="view-importer" class="view"></section>
+    </main>
+  </div>
+
+  <div id="modalRoot"></div>
+  <div id="toastRoot" class="toast-root"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.5"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="assets/app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "name": "arena-maker-v2",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {},
+  "dependencies": {
+    "@octokit/auth-app": "^8.2.0",
+    "@octokit/rest": "^22.0.1",
+    "@supabase/supabase-js": "^2.110.5"
+  }
+}

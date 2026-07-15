@@ -1,0 +1,29 @@
+ARENA MAKER V2 — COLOCAR NO AR
+
+1. SUPABASE
+- Crie um projeto.
+- Abra SQL Editor.
+- Copie e execute todo o arquivo: supabase/schema.sql
+- Copie: Project URL, Publishable/Anon Key e Service Role Key.
+
+2. GITHUB
+- Crie um repositório para o Arena Maker.
+- Envie todos os arquivos desta pasta.
+- Crie uma GitHub App com permissão Contents: Read and write.
+- Instale a App somente nesse repositório.
+- Anote App ID e Installation ID e gere a chave privada.
+
+3. VERCEL
+- Importe o repositório do GitHub.
+- Em Settings > Environment Variables, cadastre tudo que aparece em .env.example.
+- Faça o deploy novamente.
+
+4. USO
+- Entre no sistema pelo link mágico enviado ao e-mail.
+- Cadastre os jogadores uma única vez.
+- Em cada campeonato, selecione os participantes e escolha Liga, Mata-mata ou Misto.
+- Para atualizar o projeto depois, abra Publicar ZIP, arraste o ZIP e clique em Fazer commit no GitHub.
+
+IMPORTANTE
+- Nunca coloque a Service Role do Supabase ou a chave privada do GitHub no HTML.
+- O sistema já foi preparado para manter esses segredos somente no servidor do Vercel.
