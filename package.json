@@ -1,9 +1,8 @@
 {
-  "name": "arena-maker-v3-sem-login",
-  "version": "3.0.0",
+  "name": "arena-maker-tournament-first",
+  "version": "4.0.0",
   "private": true,
   "type": "module",
-  "scripts": {},
   "dependencies": {
     "@octokit/auth-app": "^8.2.0",
     "@octokit/rest": "^22.0.1"
