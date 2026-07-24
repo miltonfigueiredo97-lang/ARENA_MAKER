@@ -1,15 +1,36 @@
-# Arena Maker V9
+# Arena Maker V10
 
-Atualização com equipes rotativas e classificação individual.
+Atualização centrada na experiência do campeonato.
 
-- Novo modelo “Equipes rotativas na liga”.
-- Permite 2v2, 3v3, 4v4 e outros tamanhos compatíveis com o elenco.
-- Três formas de montagem: rotação equilibrada, sorteio em cada rodada e times fixos por blocos de rodadas.
-- O motor tenta equilibrar descansos, repetição de companheiros e repetição de adversários.
-- Todos os integrantes recebem vitória, empate, derrota, pontos e placar da equipe temporária.
-- A tabela da liga continua individual.
-- Em Liga + mata-mata, os melhores jogadores avançam para uma fase final individual (1v1).
-- As formações sorteadas podem ser ajustadas manualmente antes de salvar cada partida.
-- Mantém equipes fixas, modo individual, FIFA, League of Legends, Beyblade, chave completa e publicação por ZIP.
+## Novidades
 
-Não exige alteração no SQL do Supabase.
+- Edição do nome, capa e perfil do jogo após a criação.
+- Edição do nome e da foto de todos os jogadores.
+- Imagens salvas no Supabase Storage (`arena-media`).
+- URLs das imagens persistidas no estado JSON do campeonato e capa também na coluna `cover_image_url`.
+- Nova tela principal com confronto em destaque e classificação/chave ao lado.
+- Aba Partidas removida do menu principal.
+- Central de Jogos em tela cheia para navegar e preencher resultados.
+- Reconfiguração do formato com aviso explícito de que os resultados serão apagados.
+- Compatibilidade com Individual, Equipes Fixas e Equipes Rotativas.
+
+## Atualização obrigatória do Supabase
+
+Antes de enviar fotos, execute no SQL Editor:
+
+`supabase/MIGRACAO_V10.sql`
+
+O script:
+
+1. adiciona `cover_image_url` sem apagar dados;
+2. corrige o `mode` para aceitar `dynamic`;
+3. cria o bucket público `arena-media` com limite de 5 MB;
+4. cria as políticas de upload, leitura, atualização e exclusão.
+
+## Publicação
+
+Envie o ZIP pelo importador do Arena Maker sem marcar **Espelhar repositório**. A Vercel fará um novo deploy após o commit.
+
+## Observação de acesso
+
+O projeto continua sem login, conforme solicitado. Portanto, quem tiver acesso à URL do sistema também poderá alterar dados e enviar imagens. O `PUBLISH_SECRET` protege apenas a publicação de ZIP no GitHub.
