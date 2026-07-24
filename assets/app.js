@@ -27,6 +27,12 @@ function avatarHtml(name, imageUrl = '', className = '') {
   return `<span class="arena-avatar ${className}">${imageUrl ? `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(name)}">` : `<b>${escapeHtml(initials(name))}</b>`}</span>`;
 }
 
+function tournamentEmblemHtml(tournament, className = '') {
+  const profile = getGameProfile(tournament);
+  const imageUrl = tournament?.coverImageUrl || '';
+  return `<span class="tournament-emblem ${className}" title="${escapeHtml(tournament?.name || profile.label)}">${imageUrl ? `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(tournament?.name || profile.label)}">` : `<b>${escapeHtml(profile.icon)}</b>`}</span>`;
+}
+
 function matchSideAvatarHtml(tournament, match, side, className = '') {
   const lineup = side === 'home' ? match.homeLineup : match.awayLineup;
   const participant = matchSideParticipant(tournament, match, side);
@@ -1663,7 +1669,7 @@ function spotlightMatchHtml(tournament, match) {
     <div class="spotlight-round"><span>${escapeHtml(match.roundName)}</span><b>${match.played ? 'RESULTADO REGISTRADO' : 'PRÓXIMO CONFRONTO'}</b></div>
     <div class="spotlight-versus">
       <div class="spotlight-side">${matchSideAvatarHtml(tournament,match,'home','hero-avatar')}<strong>${escapeHtml(home.name)}</strong>${match.homeChoice ? choiceIdentityHtml(match.homeChoice,match.homeChoiceImage,true) : ''}</div>
-      <div class="spotlight-score"><span>${match.played ? match.homeScore : '—'}</span><small>VS</small><span>${match.played ? match.awayScore : '—'}</span></div>
+      <div class="spotlight-score"><span>${match.played ? match.homeScore : '—'}</span><div class="spotlight-center-mark">${tournamentEmblemHtml(tournament,'hero-emblem')}<small><span>VS</span></small></div><span>${match.played ? match.awayScore : '—'}</span></div>
       <div class="spotlight-side away">${matchSideAvatarHtml(tournament,match,'away','hero-avatar')}<strong>${escapeHtml(away.name)}</strong>${match.awayChoice ? choiceIdentityHtml(match.awayChoice,match.awayChoiceImage,true) : ''}</div>
     </div>
     <button class="button primary spotlight-action" data-open-games-center="${match.id}">${match.played ? 'Abrir e editar confronto' : 'Preencher confronto'}</button>
@@ -1690,6 +1696,10 @@ function overviewTabHtml(tournament) {
       <div class="overview-fixture-grid">${recent.map((match) => `<button class="overview-fixture ${match.played ? 'played' : ''}" data-open-games-center="${match.id}">
         <small>${escapeHtml(match.roundName)}</small><strong>${escapeHtml(matchSideName(tournament,match,'home'))} <b>${match.played ? match.homeScore : '×'}</b> ${escapeHtml(matchSideName(tournament,match,'away'))}</strong><span>${match.played ? 'Editar resultado' : 'Registrar partida'}</span>
       </button>`).join('') || '<div class="overview-empty">Nenhum confronto disponível.</div>'}</div>
+    </section>
+    <section class="overview-stats-section">
+      <div class="overview-section-head"><div><span>ESTATÍSTICAS</span><h3>Números do campeonato</h3></div><button class="button small ghost" data-detail-tab="statistics">Abrir painel</button></div>
+      <div class="overview-stats-scroll">${statisticsTabHtml(tournament)}</div>
     </section>
   </div>`;
 }
@@ -1754,11 +1764,12 @@ function standardSeedOrder(size) {
 }
 
 function bracketSlotParticipant(tournament, id, fallback = 'A definir', image = '') {
+  const participantImage = id ? imageUrlForParticipant(tournament, id) : '';
   return {
     kind: 'participant',
     id: id || '',
     label: id ? participantName(tournament, id) : fallback,
-    image: image || ''
+    image: participantImage || image || ''
   };
 }
 
@@ -2659,7 +2670,7 @@ function gamesCenterEditorHtml(tournament, match) {
   return `<form id="centerMatchForm" class="center-match-form">
     <div class="center-duel-banner">
       <div class="center-duel-side">${matchSideAvatarHtml(tournament,match,'home','center-avatar')}<strong>${escapeHtml(home.name)}</strong></div>
-      <div><span>${escapeHtml(match.roundName)}</span><b>VS</b></div>
+      <div class="center-duel-middle"><span>${escapeHtml(match.roundName)}</span>${tournamentEmblemHtml(tournament,'center-emblem')}<b>VS</b></div>
       <div class="center-duel-side away">${matchSideAvatarHtml(tournament,match,'away','center-avatar')}<strong>${escapeHtml(away.name)}</strong></div>
     </div>
     <div class="center-form-scroll game-match-form ${gameProfileClass(tournament)}">
@@ -3120,7 +3131,7 @@ function centerBracketSlotHtml(slot, model, score, winner) {
 function fullCenterBracketHtml(tournament) {
   const model = bracketDisplayModel(tournament);
   return `<div class="center-bracket-scroll"><div class="center-bracket-map" style="--center-bracket-cols:${model.columns.length}">
-    ${model.columns.map((column) => `<section class="center-bracket-column"><header><span>FASE ${String(column.round).padStart(2,'0')}</span><strong>${escapeHtml(column.title)}</strong></header><div>${column.nodes.map((node) => {
+    ${model.columns.map((column) => `<section class="center-bracket-column" data-center-bracket-round="${column.round}"><header><span>FASE ${String(column.round).padStart(2,'0')}</span><strong>${escapeHtml(column.title)}</strong></header><div>${column.nodes.map((node) => {
       const match = node.actualMatch;
       const winnerId = matchWinner(match || {});
       const ready = Boolean(match?.homeId && match?.awayId);
@@ -3133,6 +3144,37 @@ function fullCenterBracketHtml(tournament) {
       </${tag}>`;
     }).join('')}</div></section>`).join('')}
   </div></div>`;
+}
+
+function scrollCenterBracketToActiveStage(tournament, selectedMatch = null, contextMode = '') {
+  if (contextMode !== 'knockout') return;
+  const scroll = document.querySelector('.center-bracket-scroll');
+  if (!scroll) return;
+
+  const knockout = knockoutMatches(tournament);
+  let targetMatch = selectedMatch && selectedMatch.stage === 'knockout' ? selectedMatch : null;
+  if (!targetMatch) targetMatch = knockout.find((match) => !match.played && match.homeId && match.awayId) || null;
+
+  let targetRound = Number(targetMatch?.bracketRound || 0);
+  if (!targetRound) {
+    const unplayedRounds = knockout.filter((match) => !match.played).map((match) => Number(match.bracketRound || 0)).filter(Boolean);
+    targetRound = unplayedRounds.length ? Math.min(...unplayedRounds) : currentKnockoutRound(tournament);
+  }
+
+  let target = targetMatch ? document.querySelector(`[data-center-bracket-match="${targetMatch.id}"]`) : null;
+  let column = target?.closest('.center-bracket-column') || document.querySelector(`[data-center-bracket-round="${targetRound}"]`);
+  if (!column) column = document.querySelector('.center-bracket-column:last-child');
+  if (!column) return;
+
+  document.querySelectorAll('.center-bracket-column.active-stage').forEach((el) => el.classList.remove('active-stage'));
+  document.querySelectorAll('.center-bracket-card.auto-focused').forEach((el) => el.classList.remove('auto-focused'));
+  column.classList.add('active-stage');
+  if (target) target.classList.add('auto-focused');
+
+  const map = scroll.querySelector('.center-bracket-map');
+  const left = Math.max(0, column.offsetLeft - (scroll.clientWidth - column.offsetWidth) / 2);
+  const maxLeft = Math.max(0, (map?.scrollWidth || scroll.scrollWidth) - scroll.clientWidth);
+  scroll.scrollTo({ left: Math.min(left, maxLeft), behavior: 'smooth' });
 }
 
 gamesCenterContextHtml = function(tournament, mode = '') {
@@ -3154,6 +3196,75 @@ gamesCenterContextHtml = function(tournament, mode = '') {
     ${tournament.format === 'mixed' && !tournament.knockoutState?.started ? `<div class="phase-waiting ${leagueCompleted ? 'ready' : ''}"><strong>${leagueCompleted ? 'Liga concluída' : 'Fase classificatória em andamento'}</strong><span>${leagueCompleted ? 'A chave será criada automaticamente.' : `${leagueMatches(tournament).filter((match)=>match.played).length}/${leagueMatches(tournament).length} jogos da liga concluídos.`}</span></div>` : ''}
     <button type="button" class="button ghost context-open-button" data-center-open-tab="${showLeague ? 'standings' : 'bracket'}">Abrir painel completo</button>
   </section>`;
+}
+
+function championCelebrationParticles() {
+  const colors = ['#22c55e','#facc15','#fb7185','#60a5fa','#c084fc','#f97316','#ffffff'];
+  const bursts = [
+    [12,18],[30,12],[50,17],[70,12],[88,19],
+    [10,58],[28,72],[50,66],[72,72],[90,58]
+  ];
+  const fireworks = bursts.map(([x,y], burstIndex) => {
+    const sparks = Array.from({ length: 18 }, (_, index) => {
+      const angle = index * 20;
+      const distance = 72 + ((index * 17 + burstIndex * 13) % 90);
+      const color = colors[(index + burstIndex) % colors.length];
+      return `<i style="--angle:${angle}deg;--distance:${distance}px;--spark:${color};--delay:${(burstIndex * .13).toFixed(2)}s"></i>`;
+    }).join('');
+    return `<span class="champion-firework" style="--fx:${x}%;--fy:${y}%">${sparks}</span>`;
+  }).join('');
+  const confetti = Array.from({ length: 90 }, (_, index) => {
+    const left = (index * 37) % 100;
+    const delay = ((index * 19) % 26) / 10;
+    const duration = 3.2 + ((index * 7) % 18) / 10;
+    const drift = ((index * 29) % 240) - 120;
+    const color = colors[index % colors.length];
+    return `<i class="champion-confetti" style="--left:${left}%;--delay:${delay}s;--duration:${duration}s;--drift:${drift}px;--confetti:${color}"></i>`;
+  }).join('');
+  return `${fireworks}${confetti}`;
+}
+
+function showChampionCelebration(tournament) {
+  document.querySelector('.champion-celebration')?.remove();
+  const championId = tournament.championId;
+  if (!championId) return;
+  const championName = participantName(tournament, championId);
+  const championImage = imageUrlForParticipant(tournament, championId);
+  const profile = getGameProfile(tournament);
+  const overlay = document.createElement('div');
+  overlay.className = `champion-celebration ${gameProfileClass(tournament)}`;
+  overlay.innerHTML = `
+    <div class="champion-effects" aria-hidden="true">${championCelebrationParticles()}</div>
+    <div class="champion-stage">
+      <div class="champion-tournament-mark">${tournamentEmblemHtml(tournament,'celebration-emblem')}<span>${escapeHtml(profile.label)}</span></div>
+      <div class="champion-crown">♛</div>
+      <div class="champion-photo">${championImage ? `<img src="${escapeHtml(championImage)}" alt="${escapeHtml(championName)}">` : `<b>${escapeHtml(initials(championName))}</b>`}</div>
+      <div class="champion-copy">
+        <span>CAMPEÃO DO</span>
+        <h2>${escapeHtml(tournament.name)}</h2>
+        <strong>${escapeHtml(championName)}</strong>
+      </div>
+      <div class="champion-actions">
+        <button type="button" class="button primary champion-stats-button">VER ESTATÍSTICAS</button>
+        <button type="button" class="button ghost champion-close-button">FECHAR</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  document.body.classList.add('celebrating-champion');
+  requestAnimationFrame(() => overlay.classList.add('show'));
+
+  const close = () => {
+    overlay.classList.remove('show');
+    document.body.classList.remove('celebrating-champion');
+    setTimeout(() => overlay.remove(), 450);
+  };
+  overlay.querySelector('.champion-close-button')?.addEventListener('click', close);
+  overlay.querySelector('.champion-stats-button')?.addEventListener('click', () => {
+    close();
+    state.detailTab = 'statistics';
+    renderTournamentDetail();
+    setTimeout(() => document.querySelector('.stats-dashboard')?.scrollIntoView({ behavior:'smooth', block:'start' }), 120);
+  });
 }
 
 openGamesCenter = function(tournamentId, requestedMatchId = '', requestedContext = '') {
@@ -3193,6 +3304,9 @@ openGamesCenter = function(tournamentId, requestedMatchId = '', requestedContext
     closeModal();
     renderTournamentDetail();
   });
+  if (contextMode === 'knockout') {
+    requestAnimationFrame(() => requestAnimationFrame(() => scrollCenterBracketToActiveStage(tournament, selected, contextMode)));
+  }
   if (!selected) return;
   if (profile.id === 'fifa' || profile.id === 'lol') {
     bindGameAssetPicker(profile.id, 'home');
@@ -3214,6 +3328,13 @@ openGamesCenter = function(tournamentId, requestedMatchId = '', requestedContext
     if (submit) submit.disabled = true;
     try {
       const outcome = await saveMatchFromForm(tournament, selected);
+      if (outcome.championDeclared) {
+        closeModal();
+        renderTournamentDetail();
+        showChampionCelebration(tournament);
+        toast(`${participantName(tournament,tournament.championId)} é o campeão!`, 'success');
+        return;
+      }
       const next = nextCenterMatch(tournament);
       openGamesCenter(tournament.id, next?.id || selected.id, outcome.transitioned ? 'knockout' : activeCenterPhase(tournament));
       toast(outcome.transitioned ? 'Liga concluída. Mata-mata criado automaticamente.' : 'Resultado salvo.', 'success');
@@ -3225,6 +3346,7 @@ openGamesCenter = function(tournamentId, requestedMatchId = '', requestedContext
 }
 
 saveMatchFromForm = async function(tournament, match) {
+  const championBeforeSave = tournament.championId || null;
   const home = matchSideParticipant(tournament, match, 'home');
   const away = matchSideParticipant(tournament, match, 'away');
   const knockout = match.stage === 'knockout' || match.stage === 'third';
@@ -3293,7 +3415,8 @@ saveMatchFromForm = async function(tournament, match) {
   // Também repara qualquer rodada eliminatória completa que tenha ficado sem sucessora.
   if (ensureTournamentProgress(tournament)) transitioned = transitioned || match.stage === 'league';
   await persistTournament(tournament);
-  return { transitioned };
+  const championDeclared = Boolean(tournament.championId && tournament.championId !== championBeforeSave);
+  return { transitioned, championDeclared };
 }
 
 // A antiga janela individual passa a abrir a Central de Jogos.
