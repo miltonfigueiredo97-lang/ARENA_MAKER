@@ -42,3 +42,10 @@ O projeto continua sem login, conforme solicitado. Portanto, quem tiver acesso �
 - Campeonatos antigos que terminaram a liga e ficaram travados são reparados ao abrir.
 - A Central troca automaticamente para o mata-mata e seleciona o primeiro confronto eliminatório.
 - O painel lateral permite alternar entre Liga e mapa completo do mata-mata.
+
+
+## V11.4
+- Chave da Central posiciona a fase atual sem cortar a fase anterior.
+- Foto do campeão substitui o ícone no cabeçalho após o título.
+- Estatísticas completas ficam abaixo da Central de Jogos no mesmo popup.
+- Celebração do campeão reforçada para o último jogo da liga e a final do mata-mata.

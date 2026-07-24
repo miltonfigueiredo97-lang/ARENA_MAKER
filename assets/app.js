@@ -1549,6 +1549,8 @@ function renderTournamentDetail() {
   updateLeagueChampion(tournament);
   updateTournamentStatus(tournament);
   const profile = getGameProfile(tournament);
+  const championImage = tournament.championId ? imageUrlForParticipant(tournament, tournament.championId) : '';
+  const championName = tournament.championId ? participantName(tournament, tournament.championId) : '';
   const coverStyle = tournament.coverImageUrl
     ? `style="--tournament-cover:url('${escapeHtml(tournament.coverImageUrl)}')"`
     : '';
@@ -1557,7 +1559,9 @@ function renderTournamentDetail() {
     <div class="tournament-detail-shell ${gameProfileClass(tournament)} ${tournament.coverImageUrl ? 'has-tournament-cover' : ''}" ${coverStyle}>
       <section class="tournament-identity-hero">
         <div class="tournament-cover-layer"></div>
-        <div class="detail-game-mark"><span>${profile.icon}</span><b>${profile.short}</b></div>
+        <div class="detail-game-mark ${tournament.championId ? 'champion-mark' : ''}">${tournament.championId
+          ? `${championImage ? `<img src="${escapeHtml(championImage)}" alt="${escapeHtml(championName)}">` : `<span class="champion-initials">${escapeHtml(initials(championName))}</span>`}<b>CAMPEÃO</b>`
+          : `<span>${profile.icon}</span><b>${profile.short}</b>`}</div>
         <div class="detail-title-copy">
           <button class="button small ghost" data-back-list>← Todos os campeonatos</button>
           <div class="game-kicker">${escapeHtml(profile.label)} · ${formatLabel(tournament.format)}</div>
@@ -3172,9 +3176,21 @@ function scrollCenterBracketToActiveStage(tournament, selectedMatch = null, cont
   if (target) target.classList.add('auto-focused');
 
   const map = scroll.querySelector('.center-bracket-map');
-  const left = Math.max(0, column.offsetLeft - (scroll.clientWidth - column.offsetWidth) / 2);
+  const previous = column.previousElementSibling?.classList?.contains('center-bracket-column') ? column.previousElementSibling : null;
+  const padding = 10;
+  let left;
+  if (previous) {
+    const pairStart = previous.offsetLeft;
+    const pairEnd = column.offsetLeft + column.offsetWidth;
+    const pairWidth = pairEnd - pairStart;
+    left = pairWidth <= scroll.clientWidth - padding * 2
+      ? pairStart - Math.max(padding, (scroll.clientWidth - pairWidth) / 2)
+      : column.offsetLeft - padding;
+  } else {
+    left = column.offsetLeft - padding;
+  }
   const maxLeft = Math.max(0, (map?.scrollWidth || scroll.scrollWidth) - scroll.clientWidth);
-  scroll.scrollTo({ left: Math.min(left, maxLeft), behavior: 'smooth' });
+  scroll.scrollTo({ left: Math.max(0, Math.min(left, maxLeft)), behavior: 'smooth' });
 }
 
 gamesCenterContextHtml = function(tournament, mode = '') {
@@ -3263,7 +3279,7 @@ function showChampionCelebration(tournament) {
     close();
     state.detailTab = 'statistics';
     renderTournamentDetail();
-    setTimeout(() => document.querySelector('.stats-dashboard')?.scrollIntoView({ behavior:'smooth', block:'start' }), 120);
+    setTimeout(() => document.querySelector('.stats-dashboard')?.scrollIntoView({ behavior:'smooth', block:'start' }), 520);
   });
 }
 
@@ -3288,14 +3304,21 @@ openGamesCenter = function(tournamentId, requestedMatchId = '', requestedContext
       <div class="games-phase-progress"><span>FASE ATUAL</span><strong>${activePhase === 'league' ? 'Liga classificatória' : 'Mata-mata'}</strong><div><i style="width:${activeMatches.length ? Math.round(activeDone/activeMatches.length*100) : 0}%"></i></div><small>${activeDone}/${activeMatches.length} jogos da fase</small></div>
       <button class="icon-button games-center-close" data-close>×</button>
     </header>
-    <div class="games-center-layout">
-      <aside class="games-match-navigator"><div class="navigator-title"><div><span>CONFRONTOS</span><strong>Agenda completa</strong></div><small>${playedMatches(tournament)}/${playable.length}</small></div>${centerMatchListHtml(tournament, selected?.id || '')}</aside>
-      <main class="games-match-editor">${gamesCenterEditorHtml(tournament, selected)}</main>
-      ${gamesCenterContextHtml(tournament, contextMode)}
+    <div class="games-center-body">
+      <div class="games-center-layout">
+        <aside class="games-match-navigator"><div class="navigator-title"><div><span>CONFRONTOS</span><strong>Agenda completa</strong></div><small>${playedMatches(tournament)}/${playable.length}</small></div>${centerMatchListHtml(tournament, selected?.id || '')}</aside>
+        <main class="games-match-editor">${gamesCenterEditorHtml(tournament, selected)}</main>
+        ${gamesCenterContextHtml(tournament, contextMode)}
+      </div>
+      <section class="games-center-statistics" id="gamesCenterStatistics">
+        <div class="games-center-statistics-head"><div><span>ESTATÍSTICAS</span><h3>Painel completo do campeonato</h3><p>Role a Central de Jogos para acompanhar todos os números sem sair desta tela.</p></div><button type="button" class="button ghost" data-center-scroll-top>Voltar aos confrontos</button></div>
+        ${statisticsTabHtml(tournament)}
+      </section>
     </div>
   </div>`, 'full-screen games-center-modal');
 
   $('[data-close]')?.addEventListener('click', closeModal);
+  $('[data-center-scroll-top]')?.addEventListener('click', () => document.querySelector('.games-center-body')?.scrollTo({ top:0, behavior:'smooth' }));
   $$('[data-center-match]').forEach((button) => button.addEventListener('click', () => openGamesCenter(tournamentId, button.dataset.centerMatch, contextMode)));
   $$('[data-center-context]').forEach((button) => button.addEventListener('click', () => openGamesCenter(tournamentId, selected?.id || '', button.dataset.centerContext)));
   $$('[data-center-bracket-match]').forEach((button) => button.addEventListener('click', () => openGamesCenter(tournamentId, button.dataset.centerBracketMatch, 'knockout')));
@@ -3330,8 +3353,9 @@ openGamesCenter = function(tournamentId, requestedMatchId = '', requestedContext
       const outcome = await saveMatchFromForm(tournament, selected);
       if (outcome.championDeclared) {
         closeModal();
+        state.detailTab = 'overview';
         renderTournamentDetail();
-        showChampionCelebration(tournament);
+        setTimeout(() => showChampionCelebration(tournament), 120);
         toast(`${participantName(tournament,tournament.championId)} é o campeão!`, 'success');
         return;
       }
@@ -3345,8 +3369,22 @@ openGamesCenter = function(tournamentId, requestedMatchId = '', requestedContext
   });
 }
 
+function isChampionshipDecidingMatch(tournament, match) {
+  if (!match || match.played) return false;
+  if (match.stage === 'league' && tournament.format === 'league') {
+    return leagueMatches(tournament).filter((item) => !item.played).length === 1;
+  }
+  if (match.stage === 'knockout') {
+    const sameRound = knockoutMatches(tournament).filter((item) => Number(item.bracketRound || 0) === Number(match.bracketRound || 0));
+    const laterRounds = knockoutMatches(tournament).filter((item) => Number(item.bracketRound || 0) > Number(match.bracketRound || 0));
+    return sameRound.length === 1 && laterRounds.length === 0;
+  }
+  return false;
+}
+
 saveMatchFromForm = async function(tournament, match) {
   const championBeforeSave = tournament.championId || null;
+  const championshipDecider = isChampionshipDecidingMatch(tournament, match);
   const home = matchSideParticipant(tournament, match, 'home');
   const away = matchSideParticipant(tournament, match, 'away');
   const knockout = match.stage === 'knockout' || match.stage === 'third';
@@ -3415,7 +3453,10 @@ saveMatchFromForm = async function(tournament, match) {
   // Também repara qualquer rodada eliminatória completa que tenha ficado sem sucessora.
   if (ensureTournamentProgress(tournament)) transitioned = transitioned || match.stage === 'league';
   await persistTournament(tournament);
-  const championDeclared = Boolean(tournament.championId && tournament.championId !== championBeforeSave);
+  const championDeclared = Boolean(
+    tournament.championId &&
+    (tournament.championId !== championBeforeSave || championshipDecider)
+  );
   return { transitioned, championDeclared };
 }
 
