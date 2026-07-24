@@ -75,3 +75,7 @@ O projeto continua sem login, conforme solicitado. Portanto, quem tiver acesso �
 - Quantidade de classificados definida por grupo.
 - Mata-mata por sorteio livre ou cruzamento entre grupos.
 - No cruzamento: 1º A x último classificado B, 1º B x último classificado A e assim por diante.
+
+
+## Migração V12 obrigatória
+Antes de criar campeonatos nos formatos Milton ou Liga Fábio, execute `supabase/MIGRACAO_V12_FORMATOS.sql` no SQL Editor do Supabase. Essa migração apenas amplia a restrição da coluna `format` e não apaga dados.
