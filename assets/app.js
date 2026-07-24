@@ -240,7 +240,7 @@ function loadLocalData() {
 function normalizeTournament(raw) {
   if (!raw || typeof raw !== 'object') return raw;
   const tournament = clone(raw);
-  tournament.version = Math.max(Number(tournament.version || 0), 10);
+  tournament.version = Math.max(Number(tournament.version || 0), 11);
   tournament.gameProfile = tournament.gameProfile || detectGameProfile(tournament.game);
   const profile = getGameProfile(tournament.gameProfile);
   tournament.game = profile.label;
@@ -263,10 +263,10 @@ function normalizeTournament(raw) {
     };
   });
   tournament.settings = {
-    leagueLegs: tournament.settings?.leagueLegs || tournament.settings?.groupLegs || 1,
-    pointsWin: tournament.settings?.pointsWin ?? 3,
-    pointsDraw: tournament.settings?.pointsDraw ?? 1,
-    qualifiers: tournament.settings?.qualifiers || 8,
+    leagueLegs: Math.max(1, Number(tournament.settings?.leagueLegs || tournament.settings?.groupLegs || 1)),
+    pointsWin: Math.max(0, Number(tournament.settings?.pointsWin ?? 3)),
+    pointsDraw: Math.max(0, Number(tournament.settings?.pointsDraw ?? 1)),
+    qualifiers: Math.max(2, Number(tournament.settings?.qualifiers || 8)),
     thirdPlace: tournament.settings?.thirdPlace ?? true,
     knockoutPairing: tournament.settings?.knockoutPairing || tournament.knockoutState?.pairing || (tournament.knockoutState?.seeded ? 'seeded' : 'draw'),
     bracketMode: tournament.settings?.bracketMode || 'flexible',
@@ -1538,6 +1538,8 @@ function renderTournamentDetail() {
   const tournament = tournamentById(state.activeTournamentId);
   if (!tournament) { state.activeTournamentId = null; renderTournamentsView(); return; }
   if (state.detailTab === 'matches') state.detailTab = 'overview';
+  const phaseRepaired = ensureTournamentProgress(tournament);
+  if (phaseRepaired) persistTournament(tournament).catch((error) => console.error('Falha ao salvar avanço automático:', error));
   updateLeagueChampion(tournament);
   updateTournamentStatus(tournament);
   const profile = getGameProfile(tournament);
@@ -2912,6 +2914,386 @@ function openStructureEditModal(tournamentId) {
       toast('Estrutura recriada.', 'success');
     } catch (error) { toast(error.message, 'error'); }
   });
+}
+
+
+// ===== V11 — CENTRAL DE JOGOS EM TELA CHEIA + MOTOR DE FASES CORRIGIDO =====
+openModal = function(html, size = '') {
+  const fullscreen = String(size).includes('full-screen');
+  document.body.classList.add('modal-open');
+  $('#modalRoot').innerHTML = `<div class="modal-backdrop ${fullscreen ? 'fullscreen-backdrop' : ''}" data-backdrop><div class="modal ${size}">${html}</div></div>`;
+  $('[data-backdrop]').addEventListener('click', (event) => {
+    if (event.target.matches('[data-backdrop]')) closeModal();
+  });
+}
+
+closeModal = function() {
+  $('#modalRoot').innerHTML = '';
+  document.body.classList.remove('modal-open');
+}
+
+standings = function(tournament) {
+  const pointsWin = Math.max(0, Number(tournament.settings?.pointsWin ?? 3));
+  const pointsDraw = Math.max(0, Number(tournament.settings?.pointsDraw ?? 1));
+  const rows = Object.fromEntries((tournament.participants || []).map((participant) => [participant.id, {
+    id: participant.id,
+    pj: 0,
+    v: 0,
+    e: 0,
+    d: 0,
+    gp: 0,
+    gc: 0,
+    sg: 0,
+    pts: 0,
+    form: []
+  }]));
+
+  const applyResult = (row, ownScore, opponentScore, result) => {
+    if (!row) return;
+    const scored = Number.isFinite(Number(ownScore)) ? Number(ownScore) : 0;
+    const conceded = Number.isFinite(Number(opponentScore)) ? Number(opponentScore) : 0;
+    row.pj += 1;
+    row.gp += scored;
+    row.gc += conceded;
+    row.form.push(result);
+    if (result === 'v') {
+      row.v += 1;
+      row.pts += pointsWin;
+    } else if (result === 'd') {
+      row.d += 1;
+    } else {
+      row.e += 1;
+      row.pts += pointsDraw;
+    }
+  };
+
+  for (const match of leagueMatches(tournament)) {
+    if (!match.played || !match.homeId || !match.awayId) continue;
+    const homeScore = Number(match.homeScore ?? 0);
+    const awayScore = Number(match.awayScore ?? 0);
+    const winner = matchWinner(match);
+    const homeResult = winner === match.homeId ? 'v' : winner === match.awayId ? 'd' : 'e';
+    const awayResult = winner === match.awayId ? 'v' : winner === match.homeId ? 'd' : 'e';
+
+    if (tournament.mode === 'dynamic' || match.dynamicTeam) {
+      for (const playerId of match.homeLineup || []) {
+        const identity = playerIdentity(tournament, playerId);
+        applyResult(rows[identity?.participantId || playerId], homeScore, awayScore, homeResult);
+      }
+      for (const playerId of match.awayLineup || []) {
+        const identity = playerIdentity(tournament, playerId);
+        applyResult(rows[identity?.participantId || playerId], awayScore, homeScore, awayResult);
+      }
+    } else {
+      applyResult(rows[match.homeId], homeScore, awayScore, homeResult);
+      applyResult(rows[match.awayId], awayScore, homeScore, awayResult);
+    }
+  }
+
+  for (const row of Object.values(rows)) {
+    row.sg = row.gp - row.gc;
+    row.form = row.form.slice(-5);
+  }
+
+  return Object.values(rows).sort((a, b) =>
+    b.pts - a.pts ||
+    b.v - a.v ||
+    b.sg - a.sg ||
+    b.gp - a.gp ||
+    a.gc - b.gc ||
+    participantName(tournament, a.id).localeCompare(participantName(tournament, b.id), 'pt-BR')
+  );
+}
+
+function ensureTournamentProgress(tournament) {
+  let changed = false;
+  if (tournament.format === 'mixed' && allLeagueMatchesPlayed(tournament) && !tournament.knockoutState?.started) {
+    const qualifiers = Math.min(tournament.participants.length, Math.max(2, Number(tournament.settings?.qualifiers || 2)));
+    tournament.settings.qualifiers = qualifiers;
+    generateMixedKnockout(tournament);
+    changed = true;
+  }
+
+  // Repara campeonatos antigos que ficaram com uma rodada eliminatória concluída,
+  // mas sem a rodada seguinte criada.
+  let guard = 0;
+  while (tournament.knockoutState?.started && guard < 10) {
+    guard += 1;
+    const beforeMatches = knockoutMatches(tournament).length;
+    const beforeChampion = tournament.championId;
+    const beforeRound = currentKnockoutRound(tournament);
+    advanceKnockout(tournament);
+    if (
+      knockoutMatches(tournament).length === beforeMatches &&
+      tournament.championId === beforeChampion &&
+      currentKnockoutRound(tournament) === beforeRound
+    ) break;
+    changed = true;
+    const current = knockoutMatches(tournament).filter((match) => match.bracketRound === currentKnockoutRound(tournament));
+    if (!current.length || current.some((match) => !match.played)) break;
+  }
+  return changed;
+}
+
+function phaseLabelForMatch(match) {
+  if (match.stage === 'league') return 'FASE CLASSIFICATÓRIA';
+  if (match.stage === 'third') return 'TERCEIRO LUGAR';
+  return 'FASE ELIMINATÓRIA';
+}
+
+function activeCenterPhase(tournament) {
+  if (tournament.format === 'knockout') return 'knockout';
+  if (tournament.format === 'league') return 'league';
+  return tournament.knockoutState?.started ? 'knockout' : 'league';
+}
+
+function centerPlayableMatches(tournament) {
+  return tournament.matches.filter((match) => !match.isBye && match.homeId && match.awayId);
+}
+
+function nextCenterMatch(tournament, requestedMatchId = '') {
+  const playable = centerPlayableMatches(tournament);
+  const requested = playable.find((match) => match.id === requestedMatchId);
+  if (requested) return requested;
+  const active = activeCenterPhase(tournament);
+  const activeStages = active === 'league' ? ['league'] : ['knockout', 'third'];
+  return playable.find((match) => activeStages.includes(match.stage) && !match.played)
+    || playable.find((match) => !match.played)
+    || [...playable].reverse().find((match) => activeStages.includes(match.stage) && match.played)
+    || playable[0]
+    || null;
+}
+
+centerMatchListHtml = function(tournament, selectedId) {
+  const active = activeCenterPhase(tournament);
+  const groups = groupMatchesForDisplay(centerPlayableMatches(tournament));
+  groups.sort((a, b) => {
+    const aStage = a.matches[0]?.stage;
+    const bStage = b.matches[0]?.stage;
+    const activeStages = active === 'league' ? ['league'] : ['knockout', 'third'];
+    const aPriority = activeStages.includes(aStage) ? 0 : 1;
+    const bPriority = activeStages.includes(bStage) ? 0 : 1;
+    return aPriority - bPriority || a.key.localeCompare(b.key, undefined, { numeric: true });
+  });
+  return groups.map(({ label, matches }) => {
+    const stage = matches[0]?.stage || 'league';
+    return `<div class="center-round-group ${stage}">
+      <div class="center-round-title"><span>${phaseLabelForMatch(matches[0])}</span><strong>${escapeHtml(label)}</strong><small>${matches.filter((match) => match.played).length}/${matches.length}</small></div>
+      ${matches.map((match) => `<button type="button" class="center-match-link ${match.id === selectedId ? 'active' : ''} ${match.played ? 'played' : ''}" data-center-match="${match.id}">
+        <span class="center-match-status">${match.played ? '✓' : '○'}</span>
+        <span class="center-match-team home">${escapeHtml(matchSideName(tournament, match, 'home'))}</span>
+        <b>${match.played ? `${match.homeScore}–${match.awayScore}` : 'VS'}</b>
+        <span class="center-match-team away">${escapeHtml(matchSideName(tournament, match, 'away'))}</span>
+      </button>`).join('')}
+    </div>`;
+  }).join('');
+}
+
+function liveStandingsHtml(tournament) {
+  const rows = standings(tournament);
+  const qualifiers = tournament.format === 'mixed' ? Math.max(0, Number(tournament.settings?.qualifiers || 0)) : 0;
+  const profile = getGameProfile(tournament);
+  return `<div class="live-table-wrap">
+    <div class="live-table-head"><span>#</span><span>PARTICIPANTE</span><span>J</span><span>V</span><span>E</span><span>D</span><span>SG</span><span>PTS</span></div>
+    <div class="live-table-body">${rows.map((row, index) => {
+      const qualified = qualifiers && index < qualifiers;
+      const cut = qualifiers && index === qualifiers - 1;
+      return `<div class="live-table-row ${qualified ? 'qualified' : ''} ${cut ? 'qualification-cut' : ''}">
+        <span class="live-rank">${index + 1}</span>
+        <span class="live-player">${avatarHtml(participantName(tournament,row.id), imageUrlForParticipant(tournament,row.id), 'tiny')}<b>${escapeHtml(participantName(tournament,row.id))}</b>${qualified ? '<em>CLASS.</em>' : ''}</span>
+        <span>${row.pj}</span><span>${row.v}</span><span>${row.e}</span><span>${row.d}</span><span class="${row.sg > 0 ? 'positive' : row.sg < 0 ? 'negative' : ''}">${row.sg > 0 ? '+' : ''}${row.sg}</span><strong>${row.pts}</strong>
+      </div>`;
+    }).join('')}</div>
+    <div class="live-table-legend"><span>${profile.scoreLabel}: ${rows.reduce((sum,row)=>sum+row.gp,0)} registrados</span>${qualifiers ? `<b>Os ${qualifiers} primeiros avançam</b>` : '<b>Classificação final da liga</b>'}</div>
+  </div>`;
+}
+
+function centerBracketSlotHtml(slot, model, score, winner) {
+  const label = bracketSlotLabel(slot, model);
+  const image = bracketSlotImage(slot);
+  return `<div class="center-bracket-slot ${winner ? 'winner' : ''}">
+    <span>${image ? `<img src="${escapeHtml(image)}" alt="">` : `<b>${escapeHtml(bracketInitials(label))}</b>`}</span>
+    <strong>${escapeHtml(label)}</strong><em>${score ?? '—'}</em>
+  </div>`;
+}
+
+function fullCenterBracketHtml(tournament) {
+  const model = bracketDisplayModel(tournament);
+  return `<div class="center-bracket-scroll"><div class="center-bracket-map" style="--center-bracket-cols:${model.columns.length}">
+    ${model.columns.map((column) => `<section class="center-bracket-column"><header><span>FASE ${String(column.round).padStart(2,'0')}</span><strong>${escapeHtml(column.title)}</strong></header><div>${column.nodes.map((node) => {
+      const match = node.actualMatch;
+      const winnerId = matchWinner(match || {});
+      const ready = Boolean(match?.homeId && match?.awayId);
+      const tag = ready ? 'button' : 'article';
+      const attrs = ready ? `type="button" data-center-bracket-match="${match.id}"` : '';
+      return `<${tag} class="center-bracket-card ${match?.played ? 'played' : ''} ${ready ? 'ready' : 'locked'}" ${attrs}>
+        <small>JOGO ${String(node.gameNumber).padStart(2,'0')}</small>
+        ${centerBracketSlotHtml(node.home,model,match?.played ? match.homeScore : null,winnerId && winnerId===match?.homeId)}
+        ${centerBracketSlotHtml(node.away,model,match?.played ? match.awayScore : null,winnerId && winnerId===match?.awayId)}
+      </${tag}>`;
+    }).join('')}</div></section>`).join('')}
+  </div></div>`;
+}
+
+gamesCenterContextHtml = function(tournament, mode = '') {
+  const hasLeague = tournament.format !== 'knockout';
+  const hasKnockout = tournament.format !== 'league';
+  const active = activeCenterPhase(tournament);
+  const selectedMode = mode || active;
+  const showLeague = selectedMode === 'league' && hasLeague;
+  const leagueCompleted = allLeagueMatchesPlayed(tournament);
+  return `<section class="games-context-panel">
+    <div class="games-context-head">
+      <div><span>${showLeague ? 'CLASSIFICAÇÃO' : 'MATA-MATA'}</span><h3>${showLeague ? 'Tabela ao vivo' : 'Mapa completo'}</h3></div>
+      <div class="context-phase-tabs">
+        ${hasLeague ? `<button type="button" class="${showLeague ? 'active' : ''}" data-center-context="league">Liga</button>` : ''}
+        ${hasKnockout ? `<button type="button" class="${!showLeague ? 'active' : ''}" data-center-context="knockout">Mata-mata</button>` : ''}
+      </div>
+    </div>
+    ${showLeague ? liveStandingsHtml(tournament) : fullCenterBracketHtml(tournament)}
+    ${tournament.format === 'mixed' && !tournament.knockoutState?.started ? `<div class="phase-waiting ${leagueCompleted ? 'ready' : ''}"><strong>${leagueCompleted ? 'Liga concluída' : 'Fase classificatória em andamento'}</strong><span>${leagueCompleted ? 'A chave será criada automaticamente.' : `${leagueMatches(tournament).filter((match)=>match.played).length}/${leagueMatches(tournament).length} jogos da liga concluídos.`}</span></div>` : ''}
+    <button type="button" class="button ghost context-open-button" data-center-open-tab="${showLeague ? 'standings' : 'bracket'}">Abrir painel completo</button>
+  </section>`;
+}
+
+openGamesCenter = function(tournamentId, requestedMatchId = '', requestedContext = '') {
+  const tournament = tournamentById(tournamentId);
+  if (!tournament) return;
+  const repaired = ensureTournamentProgress(tournament);
+  if (repaired) persistTournament(tournament).catch((error)=>console.error('Falha ao persistir fase automática:',error));
+  const selected = nextCenterMatch(tournament, requestedMatchId);
+  const activePhase = activeCenterPhase(tournament);
+  const contextMode = requestedContext || activePhase;
+  const profile = getGameProfile(tournament);
+  const playable = centerPlayableMatches(tournament);
+  const activeMatches = activePhase === 'league' ? leagueMatches(tournament) : knockoutMatches(tournament);
+  const activeDone = activeMatches.filter((match)=>match.played).length;
+  const coverStyle = tournament.coverImageUrl ? `style="--games-cover:url('${escapeHtml(tournament.coverImageUrl)}')"` : '';
+
+  openModal(`<div class="games-center ${gameProfileClass(tournament)} ${tournament.coverImageUrl ? 'has-cover' : ''}" ${coverStyle}>
+    <header class="games-center-head">
+      <div class="games-cover-shade"></div>
+      <div class="games-center-title"><span>${profile.icon} CENTRAL DE JOGOS</span><h2>${escapeHtml(tournament.name)}</h2><small>${formatLabel(tournament.format)} · ${modeLabel(tournament.mode)}</small></div>
+      <div class="games-phase-progress"><span>FASE ATUAL</span><strong>${activePhase === 'league' ? 'Liga classificatória' : 'Mata-mata'}</strong><div><i style="width:${activeMatches.length ? Math.round(activeDone/activeMatches.length*100) : 0}%"></i></div><small>${activeDone}/${activeMatches.length} jogos da fase</small></div>
+      <button class="icon-button games-center-close" data-close>×</button>
+    </header>
+    <div class="games-center-layout">
+      <aside class="games-match-navigator"><div class="navigator-title"><div><span>CONFRONTOS</span><strong>Agenda completa</strong></div><small>${playedMatches(tournament)}/${playable.length}</small></div>${centerMatchListHtml(tournament, selected?.id || '')}</aside>
+      <main class="games-match-editor">${gamesCenterEditorHtml(tournament, selected)}</main>
+      ${gamesCenterContextHtml(tournament, contextMode)}
+    </div>
+  </div>`, 'full-screen games-center-modal');
+
+  $('[data-close]')?.addEventListener('click', closeModal);
+  $$('[data-center-match]').forEach((button) => button.addEventListener('click', () => openGamesCenter(tournamentId, button.dataset.centerMatch, contextMode)));
+  $$('[data-center-context]').forEach((button) => button.addEventListener('click', () => openGamesCenter(tournamentId, selected?.id || '', button.dataset.centerContext)));
+  $$('[data-center-bracket-match]').forEach((button) => button.addEventListener('click', () => openGamesCenter(tournamentId, button.dataset.centerBracketMatch, 'knockout')));
+  $('[data-center-open-tab]')?.addEventListener('click', () => {
+    state.detailTab = $('[data-center-open-tab]').dataset.centerOpenTab;
+    closeModal();
+    renderTournamentDetail();
+  });
+  if (!selected) return;
+  if (profile.id === 'fifa' || profile.id === 'lol') {
+    bindGameAssetPicker(profile.id, 'home');
+    bindGameAssetPicker(profile.id, 'away');
+  }
+  $('[data-center-clear]')?.addEventListener('click', async () => {
+    if (!confirm('Limpar este resultado? Fases posteriores do mata-mata também poderão ser removidas.')) return;
+    if (selected.stage === 'league' && tournament.format === 'mixed' && tournament.knockoutState.started) resetMixedKnockout(tournament);
+    clearMatchResult(tournament, selected);
+    try {
+      await persistTournament(tournament);
+      openGamesCenter(tournament.id, selected.id, 'league');
+      toast('Resultado removido.', 'success');
+    } catch (error) { toast(error.message, 'error'); }
+  });
+  $('#centerMatchForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const submit = event.submitter;
+    if (submit) submit.disabled = true;
+    try {
+      const outcome = await saveMatchFromForm(tournament, selected);
+      const next = nextCenterMatch(tournament);
+      openGamesCenter(tournament.id, next?.id || selected.id, outcome.transitioned ? 'knockout' : activeCenterPhase(tournament));
+      toast(outcome.transitioned ? 'Liga concluída. Mata-mata criado automaticamente.' : 'Resultado salvo.', 'success');
+    } catch (error) {
+      toast(error.message, 'error');
+      if (submit) submit.disabled = false;
+    }
+  });
+}
+
+saveMatchFromForm = async function(tournament, match) {
+  const home = matchSideParticipant(tournament, match, 'home');
+  const away = matchSideParticipant(tournament, match, 'away');
+  const knockout = match.stage === 'knockout' || match.stage === 'third';
+  const profile = getGameProfile(tournament);
+  const homeScore = Number($('#homeScore').value);
+  const awayScore = Number($('#awayScore').value);
+  if (!Number.isFinite(homeScore) || !Number.isFinite(awayScore) || homeScore < 0 || awayScore < 0) throw new Error('Informe valores válidos para o placar.');
+
+  let winnerId = null;
+  if (profile.id === 'fifa') {
+    winnerId = homeScore > awayScore ? home.id : awayScore > homeScore ? away.id : null;
+    if (knockout && homeScore === awayScore) winnerId = $('#manualWinner')?.value || null;
+    if (knockout && !winnerId) throw new Error('Em mata-mata, selecione o vencedor quando houver empate.');
+  } else {
+    winnerId = $('#manualWinner')?.value || null;
+    if (!winnerId) throw new Error('Selecione o vencedor da partida.');
+  }
+
+  if (match.stage === 'league' && tournament.format === 'mixed' && tournament.knockoutState.started) {
+    if (!confirm('Alterar a fase de liga recriará o mata-mata com a nova classificação. Continuar?')) throw new Error('Alteração cancelada.');
+    resetMixedKnockout(tournament);
+  }
+  if (match.stage === 'knockout') truncateKnockoutAfter(tournament, match.bracketRound);
+
+  Object.assign(match, {
+    homeScore,
+    awayScore,
+    winnerId,
+    played: true,
+    homeChoice: $('#homeChoice').value.trim(),
+    awayChoice: $('#awayChoice').value.trim(),
+    homeChoiceImage: $('#homeChoiceImage')?.value || '',
+    awayChoiceImage: $('#awayChoiceImage')?.value || '',
+    homeDeaths: Number($('#homeDeaths')?.value || 0),
+    awayDeaths: Number($('#awayDeaths')?.value || 0),
+    homeAssists: Number($('#homeAssists')?.value || 0),
+    awayAssists: Number($('#awayAssists')?.value || 0),
+    finishType: $('#finishType')?.value || '',
+    mvpPlayerId: $('#matchMvp').value,
+    notes: $('#matchNotes').value.trim()
+  });
+
+  if (tournament.mode === 'teams') {
+    match.homeLineup = $$('[name="homeLineup"]:checked').map((input) => input.value);
+    match.awayLineup = $$('[name="awayLineup"]:checked').map((input) => input.value);
+    if (!match.homeLineup.length || !match.awayLineup.length) throw new Error('Selecione pelo menos um jogador em cada escalação.');
+  }
+  if (tournament.mode === 'dynamic' && match.stage === 'league') {
+    const teamSize = Number(tournament.settings.dynamicTeamSize || 2);
+    const homeLineup = $$('[name="homeDynamicLineup"]:checked').map((input) => input.value);
+    const awayLineup = $$('[name="awayDynamicLineup"]:checked').map((input) => input.value);
+    if (homeLineup.length !== teamSize || awayLineup.length !== teamSize) throw new Error(`Selecione exatamente ${teamSize} jogadores em cada lado.`);
+    if (homeLineup.some((id) => awayLineup.includes(id))) throw new Error('O mesmo jogador não pode atuar pelos dois lados.');
+    match.homeLineup = homeLineup;
+    match.awayLineup = awayLineup;
+    if (match.mvpPlayerId && ![...homeLineup, ...awayLineup].includes(match.mvpPlayerId)) throw new Error('O MVP precisa estar em uma das equipes desta partida.');
+  }
+
+  updateLeagueChampion(tournament);
+  if (match.stage === 'knockout') advanceKnockout(tournament);
+  let transitioned = false;
+  if (match.stage === 'league' && tournament.format === 'mixed' && allLeagueMatchesPlayed(tournament) && !tournament.knockoutState.started) {
+    generateMixedKnockout(tournament);
+    transitioned = true;
+  }
+  // Também repara qualquer rodada eliminatória completa que tenha ficado sem sucessora.
+  if (ensureTournamentProgress(tournament)) transitioned = transitioned || match.stage === 'league';
+  await persistTournament(tournament);
+  return { transitioned };
 }
 
 // A antiga janela individual passa a abrir a Central de Jogos.

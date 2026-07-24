@@ -1002,3 +1002,114 @@ button.bracket-node:hover { transform:translateY(-3px); border-color:color-mix(i
   .player-edit-row .file-button,.player-edit-row [data-remove-player-image] { width:100%; }
   .settings-actions-grid { grid-template-columns:1fr; }
 }
+
+/* ===== V11 — Central de Jogos realmente em tela cheia ===== */
+body.modal-open { overflow:hidden !important; }
+.modal-backdrop.fullscreen-backdrop { display:block; padding:0; background:#03060a; backdrop-filter:none; }
+.modal.full-screen.games-center-modal { width:100vw; height:100dvh; max-width:none; max-height:none; border:0; border-radius:0; box-shadow:none; }
+.games-center { height:100dvh; grid-template-rows:86px minmax(0,1fr); }
+.games-center-head { min-height:0; padding:11px 18px; display:grid; grid-template-columns:minmax(260px,1fr) minmax(260px,420px) 42px; gap:22px; }
+.games-center-title { min-width:0; }
+.games-center-title h2 { overflow:hidden; margin:2px 0; font-size:1.55rem; line-height:1; text-overflow:ellipsis; white-space:nowrap; }
+.games-center-title small { font-size:.62rem; }
+.games-phase-progress { display:grid; grid-template-columns:auto 1fr; align-items:center; gap:2px 10px; min-width:0; padding:8px 12px; border:1px solid color-mix(in srgb,var(--game-accent) 25%,var(--line)); background:rgba(4,8,13,.6); }
+.games-phase-progress > span { grid-column:1; font-size:.48rem; }
+.games-phase-progress > strong { grid-column:2; justify-self:end; overflow:hidden; font:800 .78rem "Barlow Condensed",Inter,sans-serif; text-transform:uppercase; text-overflow:ellipsis; white-space:nowrap; }
+.games-phase-progress > div { grid-column:1/-1; height:4px; overflow:hidden; background:rgba(255,255,255,.1); }
+.games-phase-progress > div i { display:block; height:100%; background:var(--game-accent); box-shadow:0 0 12px var(--game-accent); }
+.games-phase-progress > small { grid-column:1/-1; justify-self:end; font-size:.5rem; }
+.games-center-close { align-self:start; justify-self:end; }
+.games-center-layout { grid-template-columns:252px minmax(590px,1fr) minmax(390px,430px); }
+.games-match-navigator,.games-context-panel { scrollbar-width:thin; scrollbar-color:var(--game-accent) transparent; }
+.navigator-title { display:flex; align-items:end; justify-content:space-between; gap:10px; padding:13px 14px; }
+.navigator-title > div { min-width:0; }
+.navigator-title > small { color:var(--game-accent); font-weight:800; }
+.center-round-title { display:grid; grid-template-columns:1fr auto; align-items:end; gap:2px 8px; padding:12px 12px 7px; border-top:1px solid rgba(255,255,255,.025); }
+.center-round-title > span { grid-column:1/-1; color:var(--game-accent); font-size:.44rem; font-weight:800; letter-spacing:.12em; }
+.center-round-title strong { overflow:hidden; color:#dce5f2; font:800 .68rem "Barlow Condensed",Inter,sans-serif; text-transform:uppercase; text-overflow:ellipsis; white-space:nowrap; }
+.center-round-title small { color:var(--subtle); font-size:.5rem; }
+.center-match-link { grid-template-columns:18px minmax(0,1fr) auto minmax(0,1fr); min-height:42px; gap:6px; padding:8px 11px; }
+.center-match-link .center-match-status { color:var(--subtle); font-size:.62rem; }
+.center-match-link.played .center-match-status { color:var(--success); }
+.center-match-team { overflow:hidden; font-size:.56rem; font-weight:700; text-overflow:ellipsis; white-space:nowrap; }
+.center-match-team.away { text-align:right; }
+.center-match-link b { min-width:34px; padding:4px 5px; border:1px solid var(--line); background:#060a10; text-align:center; }
+.games-match-editor { height:100%; }
+.center-match-form { grid-template-rows:112px minmax(0,1fr) 64px; }
+.center-duel-banner { grid-template-columns:minmax(0,1fr) 84px minmax(0,1fr); padding:10px 22px; }
+.arena-avatar.center-avatar { width:72px; height:72px; }
+.center-duel-side strong { font-size:1.08rem; }
+.center-form-scroll { padding:16px 18px 24px; }
+.center-form-scroll .versus-form { gap:10px; }
+.center-form-scroll .side-form { padding:13px; }
+.center-form-scroll .side-form-head { margin-bottom:10px; padding-bottom:8px; }
+.center-form-scroll .score-input input { min-height:58px; }
+.center-form-actions { min-height:64px; padding:10px 18px; }
+.games-context-panel { display:grid; grid-template-rows:auto minmax(0,1fr) auto; }
+.games-context-head { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:11px 12px; }
+.games-context-head h3 { font-size:1rem; }
+.context-phase-tabs { display:flex; gap:4px; }
+.context-phase-tabs button { min-height:28px; padding:0 8px; border:1px solid var(--line); background:#070b11; color:var(--muted); font-size:.52rem; font-weight:800; text-transform:uppercase; cursor:pointer; }
+.context-phase-tabs button.active { border-color:var(--game-accent); background:var(--game-soft); color:#fff; }
+.live-table-wrap { min-height:0; overflow:auto; }
+.live-table-head,.live-table-row { display:grid; grid-template-columns:25px minmax(122px,1fr) repeat(4,25px) 36px 39px; align-items:center; gap:3px; }
+.live-table-head { position:sticky; z-index:1; top:0; min-height:31px; padding:0 8px; border-bottom:1px solid var(--line); background:#080d14; color:var(--subtle); font-size:.43rem; font-weight:800; text-align:center; }
+.live-table-head span:nth-child(2) { text-align:left; }
+.live-table-row { position:relative; min-height:50px; padding:5px 8px; border-bottom:1px solid var(--line); font-size:.54rem; text-align:center; }
+.live-table-row.qualified { background:linear-gradient(90deg,var(--game-soft),transparent); }
+.live-table-row.qualification-cut::after { content:'LINHA DE CORTE'; position:absolute; left:0; right:0; bottom:-7px; z-index:1; height:12px; padding-right:8px; border-top:2px solid var(--game-accent); background:#090e15; color:var(--game-accent); font-size:.38rem; font-weight:900; letter-spacing:.12em; text-align:right; }
+.live-rank { color:var(--subtle); font-weight:800; }
+.live-player { min-width:0; display:grid; grid-template-columns:28px minmax(0,1fr) auto; align-items:center; gap:7px; text-align:left; }
+.live-player b { overflow:hidden; font-size:.57rem; text-overflow:ellipsis; white-space:nowrap; }
+.live-player em { color:var(--game-accent); font-size:.36rem; font-style:normal; font-weight:900; }
+.live-table-row > strong { color:#fff; font-size:.65rem; }
+.live-table-row .positive { color:var(--success); }
+.live-table-row .negative { color:#fb7185; }
+.live-table-legend { display:flex; justify-content:space-between; gap:10px; padding:10px 12px; border-top:1px solid var(--line); color:var(--muted); font-size:.48rem; }
+.live-table-legend b { color:var(--game-accent); }
+.center-bracket-scroll { min-height:0; overflow:auto; padding:10px; }
+.center-bracket-map { width:max-content; min-width:100%; display:grid; grid-template-columns:repeat(var(--center-bracket-cols),minmax(230px,1fr)); gap:12px; align-items:stretch; }
+.center-bracket-column { min-width:230px; padding:8px; border:1px solid var(--line); background:rgba(5,9,14,.62); }
+.center-bracket-column > header { min-height:42px; padding:2px 3px 8px; border-bottom:1px solid var(--line); }
+.center-bracket-column > header span,.center-bracket-column > header strong { display:block; }
+.center-bracket-column > header span { color:var(--game-accent); font-size:.42rem; font-weight:900; letter-spacing:.12em; }
+.center-bracket-column > header strong { margin-top:3px; font:800 .72rem "Barlow Condensed",Inter,sans-serif; text-transform:uppercase; }
+.center-bracket-column > div { height:calc(100% - 42px); display:flex; flex-direction:column; justify-content:space-around; gap:12px; padding-top:10px; }
+.center-bracket-card { width:100%; display:grid; gap:4px; padding:7px; border:1px solid var(--line); background:#070b11; color:inherit; text-align:left; }
+button.center-bracket-card { cursor:pointer; }
+.center-bracket-card.ready:hover { border-color:var(--game-accent); background:var(--game-soft); }
+.center-bracket-card > small { color:var(--game-accent); font-size:.4rem; font-weight:900; }
+.center-bracket-slot { display:grid; grid-template-columns:24px minmax(0,1fr) 24px; align-items:center; gap:6px; min-height:29px; padding:3px; background:rgba(255,255,255,.025); }
+.center-bracket-slot > span { width:23px; height:23px; display:grid; place-items:center; overflow:hidden; border:1px solid var(--line); background:#05080d; }
+.center-bracket-slot img { width:100%; height:100%; object-fit:cover; }
+.center-bracket-slot b { font-size:.38rem; }
+.center-bracket-slot strong { overflow:hidden; font-size:.51rem; text-overflow:ellipsis; white-space:nowrap; }
+.center-bracket-slot em { color:#fff; font-size:.6rem; font-style:normal; font-weight:900; text-align:center; }
+.center-bracket-slot.winner { background:var(--game-soft); box-shadow:inset 2px 0 0 var(--game-accent); }
+.phase-waiting { margin:10px; padding:10px; border:1px solid var(--line); background:#080d14; }
+.phase-waiting strong,.phase-waiting span { display:block; }
+.phase-waiting strong { color:var(--warning); font-size:.6rem; }
+.phase-waiting span { margin-top:3px; color:var(--muted); font-size:.5rem; }
+.phase-waiting.ready strong { color:var(--success); }
+.context-open-button { margin:10px; width:calc(100% - 20px); }
+
+@media (max-width:1380px) {
+  .games-center-layout { grid-template-columns:226px minmax(520px,1fr) minmax(340px,380px); }
+  .live-table-head,.live-table-row { grid-template-columns:23px minmax(100px,1fr) repeat(4,22px) 32px 36px; }
+}
+@media (max-width:1120px) {
+  .games-center-layout { grid-template-columns:220px minmax(0,1fr); }
+  .games-context-panel { display:none; }
+}
+@media (max-width:760px) {
+  .games-center { grid-template-rows:74px minmax(0,1fr); }
+  .games-center-head { grid-template-columns:minmax(0,1fr) 36px; padding:9px 11px; }
+  .games-phase-progress { display:none; }
+  .games-center-layout { grid-template-columns:1fr; }
+  .games-match-navigator { display:none; }
+  .center-match-form { grid-template-rows:92px minmax(0,1fr) 60px; }
+  .center-duel-banner { grid-template-columns:minmax(0,1fr) 48px minmax(0,1fr); padding:7px 9px; }
+  .arena-avatar.center-avatar { width:52px; height:52px; }
+  .center-form-scroll { padding:12px; }
+}
+.games-center-head > .games-cover-shade { display:none; }

@@ -34,3 +34,11 @@ Envie o ZIP pelo importador do Arena Maker sem marcar **Espelhar repositório**.
 ## Observação de acesso
 
 O projeto continua sem login, conforme solicitado. Portanto, quem tiver acesso à URL do sistema também poderá alterar dados e enviar imagens. O `PUBLISH_SECRET` protege apenas a publicação de ZIP no GitHub.
+
+## V11 — Correções da Central de Jogos
+- Central ocupa 100% da tela sem rolagem externa quebrada.
+- Tabela ao vivo mostra J/V/E/D/SG/PTS e usa números normalizados.
+- Ao salvar o último jogo da liga em formato misto, o mata-mata é criado automaticamente.
+- Campeonatos antigos que terminaram a liga e ficaram travados são reparados ao abrir.
+- A Central troca automaticamente para o mata-mata e seleciona o primeiro confronto eliminatório.
+- O painel lateral permite alternar entre Liga e mapa completo do mata-mata.
