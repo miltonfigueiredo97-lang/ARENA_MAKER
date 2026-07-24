@@ -79,3 +79,12 @@ O projeto continua sem login, conforme solicitado. Portanto, quem tiver acesso �
 
 ## Migração V12 obrigatória
 Antes de criar campeonatos nos formatos Milton ou Liga Fábio, execute `supabase/MIGRACAO_V12_FORMATOS.sql` no SQL Editor do Supabase. Essa migração apenas amplia a restrição da coluna `format` e não apaga dados.
+
+
+## V12.2 — Tema integral e Liga Fábio configurável
+
+- A cor tema escolhida agora também controla os cartões de placar e campos da Central de Jogos, sem voltar automaticamente ao verde do perfil FIFA.
+- Na Liga Fábio é possível escolher quantidade de grupos, jogadores por grupo e classificados por grupo.
+- Todos os grupos precisam ter o mesmo tamanho e usar todos os participantes; por isso o seletor mostra somente divisões exatas.
+- A classificação, a Central ao vivo e a tela dos grupos se adaptam automaticamente a Grupo A, B, C, D e demais grupos.
+- No cruzamento por classificação, o sistema evita confrontos entre jogadores do mesmo grupo na primeira rodada sempre que matematicamente possível.

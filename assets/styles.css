@@ -520,9 +520,9 @@ h1 { font-size: clamp(2.15rem,4vw,3.2rem); font-weight: 800; }
 }
 
 /* Arena Maker V6 — perfis de jogo, painéis esportivos e estatísticas */
-.game-fifa { --game-accent:#22c55e; --game-accent-2:#38bdf8; --game-glow:rgba(34,197,94,.18); --game-soft:rgba(34,197,94,.09); }
-.game-lol { --game-accent:#b18cff; --game-accent-2:#d7b65c; --game-glow:rgba(177,140,255,.2); --game-soft:rgba(177,140,255,.09); }
-.game-beyblade { --game-accent:#ff4d67; --game-accent-2:#41b9ff; --game-glow:rgba(255,77,103,.19); --game-soft:rgba(255,77,103,.09); }
+.game-choice.game-fifa { --game-accent:#22c55e; --game-accent-2:#38bdf8; --game-glow:rgba(34,197,94,.18); --game-soft:rgba(34,197,94,.09); }
+.game-choice.game-lol { --game-accent:#b18cff; --game-accent-2:#d7b65c; --game-glow:rgba(177,140,255,.2); --game-soft:rgba(177,140,255,.09); }
+.game-choice.game-beyblade { --game-accent:#ff4d67; --game-accent-2:#41b9ff; --game-glow:rgba(255,77,103,.19); --game-soft:rgba(255,77,103,.09); }
 
 .game-profile-section { padding:18px; border:1px solid var(--line); background:linear-gradient(145deg,rgba(255,255,255,.025),rgba(0,0,0,.12)); }
 .section-title-line { margin-bottom:14px; }
@@ -1724,3 +1724,10 @@ body.celebrating-champion { overflow:hidden !important; }
   .compact-fabio-groups > section + section { border-left:0; border-top:1px solid var(--line); }
   .fabio-groups-preview { grid-template-columns:auto 1fr; }
 }
+
+/* V12.2 — tema integral e grupos configuráveis da Liga Fábio */
+.fabio-groups-preview.dynamic { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:8px; padding:12px; border:1px solid var(--line); background:#080d14; }
+.fabio-groups-preview.dynamic span,.fabio-groups-preview.dynamic strong { display:block; text-align:center; }
+.fabio-groups-preview.dynamic span { color:var(--game-accent); font-size:.5rem; letter-spacing:.08em; }
+.fabio-groups-preview.dynamic strong { color:#fff; font-size:.66rem; }
+.compact-fabio-groups,.fabio-standings-grid,.live-fabio-groups { grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); }
