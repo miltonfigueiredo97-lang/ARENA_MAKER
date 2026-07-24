@@ -1364,3 +1364,335 @@ body.celebrating-champion { overflow:hidden !important; }
   .games-center-statistics-head { align-items:stretch; flex-direction:column; padding:14px; }
   .games-center-statistics-head .button { width:100%; }
 }
+
+/* ===== V11.5 — identidade visual, central refinada e fotos nas estatísticas ===== */
+.tournament-detail-shell .button.primary,
+.games-center .button.primary,
+.champion-celebration .button.primary { color:var(--game-on-accent,#fff); }
+
+.detail-game-mark.tournament-mark { position:relative; overflow:hidden; padding:0; }
+.detail-game-mark.tournament-mark img { width:100%; height:100%; object-fit:cover; }
+.detail-game-mark.tournament-mark b {
+  position:absolute; left:0; right:0; bottom:0; margin:0; padding:3px 2px;
+  background:linear-gradient(180deg,transparent,rgba(0,0,0,.92)); color:#fff;
+  font-size:.38rem; text-align:center; letter-spacing:.08em;
+}
+
+.theme-section,.theme-edit-section { display:grid; gap:12px; }
+.theme-edit-section { padding:16px; border:1px solid color-mix(in srgb,var(--game-accent) 30%,var(--line)); background:var(--game-soft); }
+.theme-edit-section h3 { margin:3px 0; }
+.theme-edit-section p { margin:0; color:var(--muted); font-size:.65rem; }
+.theme-picker { display:grid; gap:12px; padding:14px; border:1px solid color-mix(in srgb,var(--game-accent) 28%,var(--line)); background:#080d14; }
+.theme-picker-main { display:grid; grid-template-columns:52px minmax(160px,240px) auto; align-items:end; gap:12px; }
+.theme-preview { width:52px; height:52px; display:block; border:1px solid rgba(255,255,255,.2); background:var(--preview); box-shadow:0 0 24px color-mix(in srgb,var(--preview) 42%,transparent); }
+.theme-picker-main .field { margin:0; }
+.theme-picker-main input[type="color"] { min-height:38px; padding:3px; cursor:pointer; }
+.theme-picker-main > strong { align-self:center; color:#fff; font-size:.68rem; letter-spacing:.08em; }
+.theme-presets { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:7px; }
+.theme-swatch { min-width:0; display:grid; justify-items:center; gap:6px; padding:8px 5px; border:1px solid var(--line); background:#0b111a; color:var(--muted); }
+.theme-swatch:hover,.theme-swatch.active { border-color:var(--swatch); background:color-mix(in srgb,var(--swatch) 12%,#0b111a); color:#fff; }
+.theme-swatch span { width:28px; height:28px; display:block; border-radius:50%; background:var(--swatch); box-shadow:0 0 16px color-mix(in srgb,var(--swatch) 48%,transparent); }
+.theme-swatch b { max-width:100%; overflow:hidden; font-size:.46rem; text-overflow:ellipsis; white-space:nowrap; }
+.review-theme-dot,.settings-theme-value i { width:14px; height:14px; display:inline-block; margin-right:7px; border-radius:50%; background:var(--theme); box-shadow:0 0 12px color-mix(in srgb,var(--theme) 55%,transparent); vertical-align:-2px; }
+.settings-theme-value { display:inline-flex; align-items:center; justify-content:flex-end; }
+
+.center-match-form { grid-template-rows:152px minmax(0,1fr) 64px; }
+.center-duel-banner { min-height:152px; }
+.center-form-scroll { display:grid; align-content:start; gap:18px; }
+.center-form-scroll .versus-form { grid-template-columns:minmax(0,1fr) 72px minmax(0,1fr); gap:14px; }
+.center-form-scroll .side-form {
+  min-height:250px; display:grid; align-content:start; gap:12px; padding:17px;
+  border-top:3px solid var(--game-accent);
+  background:linear-gradient(155deg,var(--game-soft),rgba(6,10,16,.82) 48%);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.035),0 14px 32px rgba(0,0,0,.18);
+}
+.center-form-scroll .side-form-head { margin:0; padding-bottom:11px; }
+.center-form-scroll .asset-picker { min-height:58px; }
+.center-form-scroll .score-input input { min-height:76px; font-size:2.45rem; }
+.center-mvp-row { width:min(100%,560px); margin:0 auto; padding:14px; border:1px solid color-mix(in srgb,var(--game-accent) 28%,var(--line)); background:var(--game-soft); }
+.center-mvp-row .field { margin:0; }
+.center-mvp-row select { min-height:52px; }
+
+.games-center-statistics { min-height:auto; padding:20px 22px 38px; border-top:0; background:#05080d; }
+.games-center-statistics > .stats-dashboard { margin:0; }
+.games-center-statistics-head { display:none !important; }
+
+.stats-player-cell { display:flex; align-items:center; gap:10px; min-width:150px; }
+.arena-avatar.stats-avatar { width:38px; height:38px; box-shadow:none; }
+.arena-avatar.roster-avatar { width:48px; height:48px; box-shadow:none; }
+.roster-card { grid-template-columns:48px minmax(0,1fr); min-height:72px; padding:10px 12px; }
+.roster-card > .arena-avatar { width:48px; height:48px; }
+.roster-card > div { min-width:0; }
+.roster-card strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+@media (max-width:900px) {
+  .theme-presets { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  .theme-picker-main { grid-template-columns:48px minmax(0,1fr); }
+  .theme-picker-main > strong { grid-column:1/-1; }
+  .center-match-form { grid-template-rows:132px minmax(0,1fr) 64px; }
+  .center-duel-banner { min-height:132px; }
+  .center-form-scroll .versus-form { grid-template-columns:1fr; }
+  .center-form-scroll .side-form { min-height:0; }
+}
+
+/* ===== V11.6 — ELENCO / SELEÇÃO DE JOGADORES ===== */
+.selection-screen {
+  display: grid;
+  gap: 18px;
+}
+.selection-hero {
+  position: relative;
+  min-height: 210px;
+  display: grid;
+  grid-template-columns: 118px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 24px;
+  overflow: hidden;
+  padding: 28px 32px;
+  border: 1px solid color-mix(in srgb, var(--game-accent) 45%, var(--line));
+  background:
+    linear-gradient(90deg, rgba(5, 8, 13, .96), rgba(5, 8, 13, .75) 55%, rgba(5, 8, 13, .9)),
+    var(--selection-cover, linear-gradient(135deg, var(--game-soft), #070b11));
+  background-position: center;
+  background-size: cover;
+}
+.selection-hero::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 4px;
+  background: linear-gradient(90deg, var(--game-accent), transparent 72%);
+}
+.selection-hero > * {
+  position: relative;
+  z-index: 1;
+}
+.selection-hero-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(circle at 18% 50%, var(--game-glow), transparent 28%),
+    linear-gradient(120deg, transparent 58%, color-mix(in srgb, var(--game-accent) 14%, transparent));
+}
+.selection-hero-emblem {
+  display: grid;
+  place-items: center;
+}
+.tournament-emblem.selection-emblem {
+  width: 108px;
+  height: 108px;
+  border-radius: 28px;
+  border-width: 2px;
+  box-shadow: 0 0 0 8px rgba(255,255,255,.025), 0 24px 60px rgba(0,0,0,.45);
+}
+.selection-hero-copy span {
+  color: var(--game-accent);
+  font-size: .58rem;
+  font-weight: 900;
+  letter-spacing: .15em;
+}
+.selection-hero-copy h3 {
+  margin: 6px 0 4px;
+  color: #fff;
+  font: 900 2.25rem "Barlow Condensed", Inter, sans-serif;
+  letter-spacing: .015em;
+  text-transform: uppercase;
+}
+.selection-hero-copy p {
+  margin: 0;
+  color: var(--muted);
+  font-size: .72rem;
+}
+.selection-squad {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 14px;
+}
+.selection-player-card {
+  position: relative;
+  min-height: 360px;
+  display: grid;
+  grid-template-rows: minmax(250px, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: #080d14;
+  transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease;
+}
+.selection-player-card:hover {
+  transform: translateY(-4px);
+  border-color: color-mix(in srgb, var(--game-accent) 62%, var(--line));
+  box-shadow: 0 20px 52px rgba(0,0,0,.34);
+}
+.selection-player-card.champion {
+  border-color: color-mix(in srgb, #f7c948 72%, var(--line));
+  box-shadow: inset 0 0 0 1px rgba(247,201,72,.16);
+}
+.selection-player-number {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 4;
+  min-width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--game-accent) 54%, var(--line));
+  background: rgba(5,8,13,.84);
+  color: var(--game-accent);
+  font: 900 .74rem "Barlow Condensed", Inter, sans-serif;
+  backdrop-filter: blur(8px);
+}
+.selection-player-photo {
+  position: relative;
+  min-height: 250px;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 28%, var(--game-glow), transparent 30%),
+    linear-gradient(160deg, var(--game-soft), #060a10 70%);
+}
+.selection-player-photo > img {
+  width: 100%;
+  height: 100%;
+  min-height: 250px;
+  display: block;
+  object-fit: cover;
+  object-position: center top;
+  transition: transform .35s ease;
+}
+.selection-player-card:hover .selection-player-photo > img {
+  transform: scale(1.035);
+}
+.selection-player-shade {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent 40%, rgba(5,8,13,.26) 67%, #080d14 100%);
+}
+.selection-player-fallback {
+  width: 100%;
+  min-height: 250px;
+  display: grid;
+  place-items: center;
+  color: var(--game-accent);
+  font: 900 5rem "Barlow Condensed", Inter, sans-serif;
+  background:
+    radial-gradient(circle, var(--game-glow), transparent 46%),
+    linear-gradient(145deg, var(--game-soft), #070b11);
+}
+.selection-champion-badge {
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  z-index: 3;
+  padding: 7px 10px;
+  border: 1px solid rgba(247,201,72,.55);
+  background: rgba(15,11,2,.86);
+  color: #f7c948;
+  font-size: .49rem;
+  font-weight: 900;
+  letter-spacing: .12em;
+}
+.selection-player-copy {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  gap: 4px;
+  padding: 16px 17px 17px;
+  border-top: 1px solid var(--line);
+  background: linear-gradient(180deg, #0b111a, #080d14);
+}
+.selection-player-copy > span {
+  overflow: hidden;
+  color: var(--game-accent);
+  font-size: .49rem;
+  font-weight: 850;
+  letter-spacing: .1em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.selection-player-copy > strong {
+  overflow: hidden;
+  color: #fff;
+  font: 900 1.48rem "Barlow Condensed", Inter, sans-serif;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.selection-player-mini-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0,1fr));
+  gap: 6px;
+  margin-top: 8px;
+}
+.selection-player-mini-stats small {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  padding: 8px 6px;
+  border: 1px solid var(--line);
+  background: #070b11;
+  color: var(--subtle);
+  font-size: .46rem;
+  text-align: center;
+  text-transform: uppercase;
+}
+.selection-player-mini-stats b {
+  color: #fff;
+  font-size: .67rem;
+}
+
+@media (max-width: 900px) {
+  .selection-hero {
+    grid-template-columns: 86px minmax(0,1fr);
+    padding: 20px;
+  }
+  .selection-hero > .button {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+  .tournament-emblem.selection-emblem {
+    width: 78px;
+    height: 78px;
+    border-radius: 22px;
+  }
+  .selection-hero-copy h3 {
+    font-size: 1.75rem;
+  }
+  .selection-squad {
+    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .selection-hero {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    text-align: center;
+  }
+  .selection-hero > .button {
+    justify-self: center;
+  }
+  .selection-squad {
+    grid-template-columns: 1fr 1fr;
+    gap: 9px;
+  }
+  .selection-player-card {
+    min-height: 280px;
+    grid-template-rows: 190px auto;
+  }
+  .selection-player-photo,
+  .selection-player-photo > img,
+  .selection-player-fallback {
+    min-height: 190px;
+  }
+  .selection-player-copy {
+    padding: 12px;
+  }
+  .selection-player-copy > strong {
+    font-size: 1.1rem;
+  }
+  .selection-player-mini-stats {
+    display: none;
+  }
+}

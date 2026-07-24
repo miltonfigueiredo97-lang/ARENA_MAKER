@@ -118,6 +118,53 @@ const GAME_PROFILES = {
   }
 };
 
+const THEME_PRESETS = [
+  { name:'Verde Arena', value:'#22c55e' },
+  { name:'Roxo Champions', value:'#8b5cf6' },
+  { name:'Azul Elétrico', value:'#3b82f6' },
+  { name:'Dourado', value:'#f59e0b' },
+  { name:'Vermelho', value:'#ef4444' },
+  { name:'Rosa Neon', value:'#ec4899' }
+];
+
+function defaultThemeColor(profileId = 'fifa') {
+  return ({ fifa:'#22c55e', lol:'#8b5cf6', beyblade:'#ef4444' })[profileId] || '#22c55e';
+}
+
+function normalizeHexColor(value, fallback = '#22c55e') {
+  const text = String(value || '').trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(text)) return text.toLowerCase();
+  if (/^#[0-9a-fA-F]{3}$/.test(text)) return `#${text.slice(1).split('').map((c)=>c+c).join('')}`.toLowerCase();
+  return fallback;
+}
+
+function hexRgb(value) {
+  const hex = normalizeHexColor(value).slice(1);
+  return { r:parseInt(hex.slice(0,2),16), g:parseInt(hex.slice(2,4),16), b:parseInt(hex.slice(4,6),16) };
+}
+
+function mixHex(value, target = '#ffffff', amount = .28) {
+  const a = hexRgb(value), b = hexRgb(target);
+  const channel = (x,y) => Math.max(0,Math.min(255,Math.round(x+(y-x)*amount))).toString(16).padStart(2,'0');
+  return `#${channel(a.r,b.r)}${channel(a.g,b.g)}${channel(a.b,b.b)}`;
+}
+
+function themeStyle(tournamentOrColor) {
+  const fallback = typeof tournamentOrColor === 'object' ? defaultThemeColor(tournamentOrColor?.gameProfile) : '#22c55e';
+  const color = normalizeHexColor(typeof tournamentOrColor === 'string' ? tournamentOrColor : tournamentOrColor?.themeColor, fallback);
+  const rgb = hexRgb(color);
+  const luminance = (rgb.r*299 + rgb.g*587 + rgb.b*114) / 1000;
+  return `--game-accent:${color};--game-accent-2:${mixHex(color,'#ffffff',.34)};--game-glow:rgba(${rgb.r},${rgb.g},${rgb.b},.22);--game-soft:rgba(${rgb.r},${rgb.g},${rgb.b},.10);--game-on-accent:${luminance > 155 ? '#07100c' : '#ffffff'}`;
+}
+
+function themePickerHtml(id, value) {
+  const current = normalizeHexColor(value);
+  return `<div class="theme-picker" data-theme-picker="${id}">
+    <div class="theme-picker-main"><span class="theme-preview" style="--preview:${current}"></span><label class="field"><span>Cor personalizada</span><input id="${id}" type="color" value="${current}"></label><strong>${current.toUpperCase()}</strong></div>
+    <div class="theme-presets">${THEME_PRESETS.map((item)=>`<button type="button" class="theme-swatch ${item.value === current ? 'active' : ''}" data-theme-value="${item.value}" title="${item.name}" style="--swatch:${item.value}"><span></span><b>${item.name}</b></button>`).join('')}</div>
+  </div>`;
+}
+
 function detectGameProfile(value = '') {
   const text = String(value).toLowerCase();
   if (text.includes('league') || text === 'lol' || text.includes('legends')) return 'lol';
@@ -251,6 +298,7 @@ function normalizeTournament(raw) {
   const profile = getGameProfile(tournament.gameProfile);
   tournament.game = profile.label;
   tournament.coverImageUrl = tournament.coverImageUrl || tournament.cover_image_url || '';
+  tournament.themeColor = normalizeHexColor(tournament.themeColor, defaultThemeColor(tournament.gameProfile));
   tournament.participants = (tournament.participants || []).map((participant) => {
     const sourcePlayers = participant.players || participant.members || [{ id: participant.linkedPlayerId || uid(), name: participant.name || 'Jogador' }];
     const players = sourcePlayers.map((player) => ({
@@ -473,7 +521,7 @@ function tournamentTableHtml(tournaments) {
     const percent = total ? Math.round((played / total) * 100) : 0;
     const champion = tournament.championId ? participantName(tournament, tournament.championId) : '';
     const profile = getGameProfile(tournament);
-    return `<article class="tournament-card ${gameProfileClass(tournament)} ${tournament.coverImageUrl ? 'has-cover' : ''}" data-open-tournament="${tournament.id}" tabindex="0">
+    return `<article class="tournament-card ${gameProfileClass(tournament)} ${tournament.coverImageUrl ? 'has-cover' : ''}" style="${themeStyle(tournament)}" data-open-tournament="${tournament.id}" tabindex="0">
       <div class="tournament-card-cover" ${tournament.coverImageUrl ? `style="background-image:linear-gradient(180deg,rgba(5,8,13,.08),rgba(5,8,13,.9)),url('${escapeHtml(tournament.coverImageUrl)}')"` : ''}></div>
       <div class="tournament-card-accent"></div>
       <div class="tournament-card-top">
@@ -515,6 +563,8 @@ function newWizardState() {
     step: 1,
     name: '',
     gameProfile: 'fifa',
+    themeColor: defaultThemeColor('fifa'),
+    themeCustomized: false,
     format: 'mixed',
     mode: 'individual',
     entrants: [],
@@ -587,6 +637,7 @@ function renderWizard() {
     }
   });
 
+  $('.modal')?.setAttribute('style', themeStyle(wizard.themeColor));
   bindWizardStepEvents();
 }
 
@@ -613,8 +664,12 @@ function wizardFormatHtml(wizard) {
           <div class="profile-tags"><b>${selectedProfile.scoreLabel}</b><b>${selectedProfile.choicePlural}</b><b>MVP</b></div>
         </div>
       </section>
+      <section class="game-profile-section theme-section">
+        <div class="section-title-line"><div><span>02</span><div><strong>Cor tema do campeonato</strong><small>Essa cor será usada nos botões, classificação, chave, Central de Jogos e estatísticas.</small></div></div></div>
+        ${themePickerHtml('wizardThemeColor', wizard.themeColor)}
+      </section>
       <section class="game-profile-section">
-        <div class="section-title-line"><div><span>02</span><div><strong>Formato da competição</strong><small>Você poderá combinar liga e mata-mata.</small></div></div></div>
+        <div class="section-title-line"><div><span>03</span><div><strong>Formato da competição</strong><small>Você poderá combinar liga e mata-mata.</small></div></div></div>
         <div class="choice-grid">
           ${formatChoice('league','Liga','Todos enfrentam todos. A classificação final define o campeão.',wizard.format)}
           ${formatChoice('knockout','Mata-mata','Confrontos eliminatórios com folgas corretas quando necessário.',wizard.format)}
@@ -800,13 +855,14 @@ function wizardReviewHtml(wizard) {
   const profile = getGameProfile(wizard.gameProfile);
   return `<h3>Revisar estrutura</h3><p>Confira o formato antes de criar. O sistema usará o perfil ${profile.label} em todos os jogos e estatísticas.</p>
     <div class="stack">
-      <div class="review-hero game-${profile.id}">
+      <div class="review-hero game-${profile.id}" style="${themeStyle(wizard.themeColor)}">
         <div><span>${profile.icon} ${escapeHtml(profile.label)}</span><h3>${escapeHtml(wizard.name)}</h3></div>
         <strong>${formatLabel(wizard.format)}</strong>
       </div>
       <div class="review-grid">
         <div class="review-stat"><span>Participantes</span><strong>${participants.length}</strong></div>
         <div class="review-stat"><span>Modelo</span><strong>${modeLabel(wizard.mode)}</strong></div>
+        <div class="review-stat"><span>Cor tema</span><strong><i class="review-theme-dot" style="--theme:${wizard.themeColor}"></i>${wizard.themeColor.toUpperCase()}</strong></div>
         ${wizard.format !== 'knockout' ? `<div class="review-stat"><span>Jogos da liga</span><strong>${estimatedLeague}</strong></div>` : ''}
         ${wizard.format === 'mixed' ? `<div class="review-stat"><span>Classificados</span><strong>${wizard.qualifiers}</strong></div>` : ''}
         ${plan ? `<div class="review-stat"><span>Folgas iniciais</span><strong>${plan.byes}</strong></div>` : ''}
@@ -831,6 +887,20 @@ function bindWizardStepEvents() {
   const wizard = state.wizard;
   $$('[data-game-choice]').forEach((choice) => choice.addEventListener('click', () => {
     wizard.gameProfile = choice.dataset.gameChoice;
+    if (!wizard.themeCustomized) wizard.themeColor = defaultThemeColor(wizard.gameProfile);
+    renderWizard();
+  }));
+  $('#wizardThemeColor')?.addEventListener('input', (event) => {
+    wizard.themeColor = normalizeHexColor(event.target.value);
+    wizard.themeCustomized = true;
+    const preview = $('.theme-preview');
+    if (preview) preview.style.setProperty('--preview', wizard.themeColor);
+    const label = $('.theme-picker-main strong');
+    if (label) label.textContent = wizard.themeColor.toUpperCase();
+  });
+  $$('[data-theme-value]').forEach((button) => button.addEventListener('click', () => {
+    wizard.themeColor = normalizeHexColor(button.dataset.themeValue);
+    wizard.themeCustomized = true;
     renderWizard();
   }));
   $$('[data-format-choice]').forEach((choice) => choice.addEventListener('click', () => {
@@ -939,6 +1009,7 @@ function captureWizardFields() {
   const wizard = state.wizard;
   if ($('#wizardName')) wizard.name = $('#wizardName').value.trim();
   if ($('#wizardMode')) wizard.mode = $('#wizardMode').value;
+  if ($('#wizardThemeColor')) wizard.themeColor = normalizeHexColor($('#wizardThemeColor').value, defaultThemeColor(wizard.gameProfile));
   if ($('#wizardLeagueLegs')) wizard.leagueLegs = Number($('#wizardLeagueLegs').value);
   if ($('#wizardPointsWin')) wizard.pointsWin = Math.max(1, Number($('#wizardPointsWin').value) || 3);
   if ($('#wizardPointsDraw')) wizard.pointsDraw = Math.max(0, Number($('#wizardPointsDraw').value) || 0);
@@ -999,8 +1070,9 @@ function buildTournamentFromWizard() {
 
   const tournament = {
     id: uid(),
-    version: 10,
+    version: 12,
     coverImageUrl: '',
+    themeColor: normalizeHexColor(wizard.themeColor, defaultThemeColor(profile.id)),
     name: wizard.name,
     gameProfile: profile.id,
     game: profile.label,
@@ -1549,18 +1621,14 @@ function renderTournamentDetail() {
   updateLeagueChampion(tournament);
   updateTournamentStatus(tournament);
   const profile = getGameProfile(tournament);
-  const championImage = tournament.championId ? imageUrlForParticipant(tournament, tournament.championId) : '';
-  const championName = tournament.championId ? participantName(tournament, tournament.championId) : '';
-  const coverStyle = tournament.coverImageUrl
-    ? `style="--tournament-cover:url('${escapeHtml(tournament.coverImageUrl)}')"`
-    : '';
+  const detailStyle = `${themeStyle(tournament)}${tournament.coverImageUrl ? `;--tournament-cover:url('${escapeHtml(tournament.coverImageUrl)}')` : ''}`;
 
   $('#view-tournaments').innerHTML = `
-    <div class="tournament-detail-shell ${gameProfileClass(tournament)} ${tournament.coverImageUrl ? 'has-tournament-cover' : ''}" ${coverStyle}>
+    <div class="tournament-detail-shell ${gameProfileClass(tournament)} ${tournament.coverImageUrl ? 'has-tournament-cover' : ''}" style="${detailStyle}">
       <section class="tournament-identity-hero">
         <div class="tournament-cover-layer"></div>
-        <div class="detail-game-mark ${tournament.championId ? 'champion-mark' : ''}">${tournament.championId
-          ? `${championImage ? `<img src="${escapeHtml(championImage)}" alt="${escapeHtml(championName)}">` : `<span class="champion-initials">${escapeHtml(initials(championName))}</span>`}<b>CAMPEÃO</b>`
+        <div class="detail-game-mark tournament-mark">${tournament.coverImageUrl
+          ? `<img src="${escapeHtml(tournament.coverImageUrl)}" alt="${escapeHtml(tournament.name)}"><b>CAMPEONATO</b>`
           : `<span>${profile.icon}</span><b>${profile.short}</b>`}</div>
         <div class="detail-title-copy">
           <button class="button small ghost" data-back-list>← Todos os campeonatos</button>
@@ -1583,6 +1651,7 @@ function renderTournamentDetail() {
           ${detailTabButton('overview','Painel')}
           ${tournament.format !== 'knockout' ? detailTabButton('standings','Classificação') : ''}
           ${tournament.format !== 'league' ? detailTabButton('bracket','Mata-mata') : ''}
+          ${detailTabButton('players','Jogadores')}
           ${detailTabButton('statistics','Estatísticas')}
           ${detailTabButton('settings','Configuração')}
         </aside>
@@ -1595,7 +1664,7 @@ function renderTournamentDetail() {
   $$('[data-edit-match]').forEach((button) => button.addEventListener('click', () => openGamesCenter(tournament.id, button.dataset.editMatch)));
   $$('[data-open-games-center]').forEach((button) => button.addEventListener('click', () => openGamesCenter(tournament.id, button.dataset.openGamesCenter || '')));
   $('[data-edit-tournament]')?.addEventListener('click', () => openTournamentEditModal(tournament.id));
-  $('[data-edit-participants]')?.addEventListener('click', () => openParticipantsEditModal(tournament.id));
+  $$('[data-edit-participants]').forEach((button) => button.addEventListener('click', () => openParticipantsEditModal(tournament.id)));
   $('[data-reconfigure]')?.addEventListener('click', () => openStructureEditModal(tournament.id));
   $('[data-generate-knockout]')?.addEventListener('click', async () => {
     try { generateMixedKnockout(tournament); await persistTournament(tournament); state.detailTab = 'bracket'; renderTournamentDetail(); toast('Mata-mata gerado com os classificados.', 'success'); }
@@ -1627,7 +1696,8 @@ function detailTabHtml(tournament) {
   if (state.detailTab === 'overview') return overviewTabHtml(tournament);
   if (state.detailTab === 'standings') return standingsTabHtml(tournament);
   if (state.detailTab === 'bracket') return bracketTabHtml(tournament);
-  if (state.detailTab === 'statistics' || state.detailTab === 'participants') return statisticsTabHtml(tournament);
+  if (state.detailTab === 'players' || state.detailTab === 'participants') return playersTabHtml(tournament);
+  if (state.detailTab === 'statistics') return statisticsTabHtml(tournament);
   if (state.detailTab === 'settings') return settingsTabHtml(tournament);
   return overviewTabHtml(tournament);
 }
@@ -1753,7 +1823,7 @@ function standingsTabHtml(tournament) {
   const rows = standings(tournament);
   const qualifiers = tournament.format === 'mixed' ? tournament.settings.qualifiers : 0;
   const profile = getGameProfile(tournament);
-  return `<div class="panel standings-panel ${gameProfileClass(tournament)}"><div class="panel-head standings-title"><div><span class="panel-kicker">TABELA DA COMPETIÇÃO</span><h3>Classificação</h3><p>${tournament.mode === 'dynamic' ? `Classificação individual: cada integrante recebe o resultado da equipe temporária.${tournament.format === 'mixed' ? ` Os ${qualifiers} primeiros avançam ao 1v1.` : ''}` : tournament.format === 'mixed' ? `Os ${qualifiers} primeiros avançam ao mata-mata.` : 'Tabela completa da liga.'}</p></div><div class="legend"><span class="legend-qualified"></span> Zona de classificação</div></div><div class="table-wrap"><table class="stats-table standings-table"><thead><tr><th>#</th><th>Participante</th><th class="num">J</th><th class="num">V</th><th class="num">E</th><th class="num">D</th><th class="num">${profile.scoreShort}+</th><th class="num">${profile.scoreShort}-</th><th class="num">SALDO</th><th class="num">PTS</th></tr></thead><tbody>${rows.map((row,index) => `<tr class="${qualifiers && index < qualifiers ? 'qualified' : ''} ${qualifiers && index === qualifiers - 1 ? 'cut-line' : ''}"><td class="rank"><span>${index + 1}</span></td><td><strong>${escapeHtml(participantName(tournament,row.id))}</strong></td><td class="num">${row.pj}</td><td class="num win-cell">${row.v}</td><td class="num">${row.e}</td><td class="num loss-cell">${row.d}</td><td class="num">${row.gp}</td><td class="num">${row.gc}</td><td class="num">${row.sg}</td><td class="num points-cell"><strong>${row.pts}</strong></td></tr>`).join('')}</tbody></table></div></div>`;
+  return `<div class="panel standings-panel ${gameProfileClass(tournament)}" style="${themeStyle(tournament)}"><div class="panel-head standings-title"><div><span class="panel-kicker">TABELA DA COMPETIÇÃO</span><h3>Classificação</h3><p>${tournament.mode === 'dynamic' ? `Classificação individual: cada integrante recebe o resultado da equipe temporária.${tournament.format === 'mixed' ? ` Os ${qualifiers} primeiros avançam ao 1v1.` : ''}` : tournament.format === 'mixed' ? `Os ${qualifiers} primeiros avançam ao mata-mata.` : 'Tabela completa da liga.'}</p></div><div class="legend"><span class="legend-qualified"></span> Zona de classificação</div></div><div class="table-wrap"><table class="stats-table standings-table"><thead><tr><th>#</th><th>Participante</th><th class="num">J</th><th class="num">V</th><th class="num">E</th><th class="num">D</th><th class="num">${profile.scoreShort}+</th><th class="num">${profile.scoreShort}-</th><th class="num">SALDO</th><th class="num">PTS</th></tr></thead><tbody>${rows.map((row,index) => `<tr class="${qualifiers && index < qualifiers ? 'qualified' : ''} ${qualifiers && index === qualifiers - 1 ? 'cut-line' : ''}"><td class="rank"><span>${index + 1}</span></td><td><strong>${escapeHtml(participantName(tournament,row.id))}</strong></td><td class="num">${row.pj}</td><td class="num win-cell">${row.v}</td><td class="num">${row.e}</td><td class="num loss-cell">${row.d}</td><td class="num">${row.gp}</td><td class="num">${row.gc}</td><td class="num">${row.sg}</td><td class="num points-cell"><strong>${row.pts}</strong></td></tr>`).join('')}</tbody></table></div></div>`;
 }
 
 
@@ -2148,7 +2218,7 @@ function playerStats(tournament) {
   const profile = getGameProfile(tournament);
   const rows = new Map();
   for (const participant of tournament.participants) {
-    for (const player of participant.players) rows.set(player.id, { id: player.id, name: player.name, team: participant.name, pj:0,v:0,e:0,d:0,gp:0,gc:0,sg:0,mvp:0,kills:0,deaths:0,assists:0 });
+    for (const player of participant.players) rows.set(player.id, { id: player.id, name: player.name, imageUrl: player.imageUrl || '', participantId: participant.id, team: participant.name, pj:0,v:0,e:0,d:0,gp:0,gc:0,sg:0,mvp:0,kills:0,deaths:0,assists:0 });
   }
   for (const match of tournament.matches) {
     if (!match.played) continue;
@@ -2250,6 +2320,79 @@ function matchRecordName(tournament, match) {
   return `${matchSideName(tournament,match,'home')} ${match.homeScore} × ${match.awayScore} ${matchSideName(tournament,match,'away')}`;
 }
 
+
+function tournamentRosterEntries(tournament) {
+  const statsByPlayer = new Map(playerStats(tournament).map((row) => [row.id, row]));
+  const entries = [];
+  const seen = new Set();
+
+  for (const [participantIndex, participant] of tournament.participants.entries()) {
+    const players = participant.players?.length
+      ? participant.players
+      : [{ id: participant.id, name: participant.name, imageUrl: participant.imageUrl || '' }];
+
+    for (const [playerIndex, player] of players.entries()) {
+      const id = player.id || `${participant.id}-${playerIndex}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const stats = statsByPlayer.get(player.id) || {};
+      entries.push({
+        id,
+        participantId: participant.id,
+        name: player.name || participant.name || 'Jogador',
+        imageUrl: player.imageUrl || participant.imageUrl || '',
+        team: tournament.mode === 'teams' ? participant.name : '',
+        number: entries.length + 1,
+        pj: Number(stats.pj || 0),
+        wins: Number(stats.v || 0),
+        winRate: Number(stats.winRate || 0),
+        mvp: Number(stats.mvp || 0),
+        isChampion: Boolean(tournament.championId && (tournament.championId === participant.id || tournament.championId === player.id))
+      });
+    }
+  }
+  return entries;
+}
+
+function playerSelectionCardHtml(tournament, entry) {
+  const image = entry.imageUrl
+    ? `<img src="${escapeHtml(entry.imageUrl)}" alt="${escapeHtml(entry.name)}">`
+    : `<div class="selection-player-fallback">${escapeHtml(initials(entry.name))}</div>`;
+  return `<article class="selection-player-card ${entry.isChampion ? 'champion' : ''}">
+    <div class="selection-player-number">${String(entry.number).padStart(2,'0')}</div>
+    <div class="selection-player-photo">${image}<div class="selection-player-shade"></div>${entry.isChampion ? '<span class="selection-champion-badge">CAMPEÃO</span>' : ''}</div>
+    <div class="selection-player-copy">
+      <span>${entry.team ? escapeHtml(entry.team) : 'ELENCO DO CAMPEONATO'}</span>
+      <strong>${escapeHtml(entry.name)}</strong>
+      <div class="selection-player-mini-stats">
+        <small><b>${entry.pj}</b> jogos</small>
+        <small><b>${entry.wins}</b> vitórias</small>
+        <small><b>${entry.winRate.toFixed(0)}%</b> aproveitamento</small>
+      </div>
+    </div>
+  </article>`;
+}
+
+function playersTabHtml(tournament) {
+  const profile = getGameProfile(tournament);
+  const entries = tournamentRosterEntries(tournament);
+  return `<div class="selection-screen ${gameProfileClass(tournament)}" style="${themeStyle(tournament)}">
+    <section class="selection-hero" ${tournament.coverImageUrl ? `style="--selection-cover:url('${escapeHtml(tournament.coverImageUrl)}')"` : ''}>
+      <div class="selection-hero-backdrop"></div>
+      <div class="selection-hero-emblem">${tournamentEmblemHtml(tournament,'selection-emblem')}</div>
+      <div class="selection-hero-copy">
+        <span>CONVOCAÇÃO OFICIAL · ${escapeHtml(profile.label)}</span>
+        <h3>Elenco do campeonato</h3>
+        <p>${escapeHtml(tournament.name)} · ${entries.length} jogador${entries.length === 1 ? '' : 'es'}</p>
+      </div>
+      <button class="button secondary" data-edit-participants>Editar jogadores</button>
+    </section>
+    <section class="selection-squad">
+      ${entries.length ? entries.map((entry) => playerSelectionCardHtml(tournament, entry)).join('') : '<div class="overview-empty">Nenhum jogador cadastrado neste campeonato.</div>'}
+    </section>
+  </div>`;
+}
+
 function statisticsTabHtml(tournament) {
   const profile = getGameProfile(tournament);
   const records = tournamentRecords(tournament);
@@ -2258,7 +2401,8 @@ function statisticsTabHtml(tournament) {
   const mostChosen = choices[0];
   const leastChosen = choices.length ? [...choices].sort((a,b)=>a.picks-b.picks || a.name.localeCompare(b.name))[0] : null;
   const bestChoice = choices.length ? [...choices].sort((a,b)=>b.winRate-a.winRate || b.wins-a.wins || b.picks-a.picks)[0] : null;
-  return `<div class="stats-dashboard ${gameProfileClass(tournament)}">
+  const rosterPlayers = tournament.participants.flatMap((participant) => (participant.players || []).map((player) => ({ ...player, team:participant.name })));
+  return `<div class="stats-dashboard ${gameProfileClass(tournament)}" style="${themeStyle(tournament)}">
     <div class="stats-hero">
       <div><span class="panel-kicker">CENTRAL DE DADOS · ${profile.short}</span><h3>Estatísticas do campeonato</h3><p>Todos os números abaixo são calculados somente com as partidas desta competição.</p></div>
       <div class="stats-hero-icon">${profile.icon}</div>
@@ -2283,10 +2427,10 @@ function statisticsTabHtml(tournament) {
       </section>
       <section class="panel analytics-panel">
         <div class="panel-head"><div><span class="panel-kicker">DESEMPENHO</span><h3>Jogadores</h3><p>Campanha individual somente neste campeonato.</p></div></div>
-        <div class="table-wrap"><table class="stats-table"><thead><tr><th>Jogador</th>${tournament.mode === 'teams' ? '<th>Equipe</th>' : ''}<th class="num">J</th><th class="num">V</th><th class="num">D</th><th class="num">WR</th>${profile.id === 'lol' ? '<th class="num">K</th><th class="num">D</th><th class="num">A</th><th class="num">KDA</th>' : `<th class="num">${profile.scoreShort}+</th><th class="num">${profile.scoreShort}-</th>`}<th class="num">MVP</th></tr></thead><tbody>${players.map((row)=>`<tr><td><strong>${escapeHtml(row.name)}</strong></td>${tournament.mode === 'teams' ? `<td>${escapeHtml(row.team)}</td>` : ''}<td class="num">${row.pj}</td><td class="num win-cell">${row.v}</td><td class="num loss-cell">${row.d}</td><td class="num">${row.winRate.toFixed(1)}%</td>${profile.id === 'lol' ? `<td class="num">${row.kills}</td><td class="num">${row.deaths}</td><td class="num">${row.assists}</td><td class="num">${row.kda.toFixed(2)}</td>` : `<td class="num">${row.gp}</td><td class="num">${row.gc}</td>`}<td class="num">${row.mvp}</td></tr>`).join('')}</tbody></table></div>
+        <div class="table-wrap"><table class="stats-table"><thead><tr><th>Jogador</th>${tournament.mode === 'teams' ? '<th>Equipe</th>' : ''}<th class="num">J</th><th class="num">V</th><th class="num">D</th><th class="num">WR</th>${profile.id === 'lol' ? '<th class="num">K</th><th class="num">D</th><th class="num">A</th><th class="num">KDA</th>' : `<th class="num">${profile.scoreShort}+</th><th class="num">${profile.scoreShort}-</th>`}<th class="num">MVP</th></tr></thead><tbody>${players.map((row)=>`<tr><td><span class="stats-player-cell">${avatarHtml(row.name,row.imageUrl,'stats-avatar')}<strong>${escapeHtml(row.name)}</strong></span></td>${tournament.mode === 'teams' ? `<td>${escapeHtml(row.team)}</td>` : ''}<td class="num">${row.pj}</td><td class="num win-cell">${row.v}</td><td class="num loss-cell">${row.d}</td><td class="num">${row.winRate.toFixed(1)}%</td>${profile.id === 'lol' ? `<td class="num">${row.kills}</td><td class="num">${row.deaths}</td><td class="num">${row.assists}</td><td class="num">${row.kda.toFixed(2)}</td>` : `<td class="num">${row.gp}</td><td class="num">${row.gc}</td>`}<td class="num">${row.mvp}</td></tr>`).join('')}</tbody></table></div>
       </section>
     </div>
-    <section class="panel"><div class="panel-head"><div><span class="panel-kicker">ELENCO</span><h3>${tournament.mode === 'dynamic' ? 'Jogadores da rotação' : 'Participantes do campeonato'}</h3>${tournament.mode === 'dynamic' ? '<p>Os parceiros mudam, mas a campanha e a classificação pertencem a cada jogador.</p>' : ''}</div></div><div class="panel-body"><div class="participant-roster">${tournament.participants.map((participant,index)=>`<div class="roster-card"><span>${String(index+1).padStart(2,'0')}</span><div><strong>${escapeHtml(participant.name)}</strong>${tournament.mode === 'teams' ? `<small>${participant.players.map((p)=>escapeHtml(p.name)).join(' · ')}</small>` : tournament.mode === 'dynamic' ? '<small>Classificação individual</small>' : ''}</div></div>`).join('')}</div></div></section>
+    <section class="panel"><div class="panel-head"><div><span class="panel-kicker">ELENCO</span><h3>${tournament.mode === 'dynamic' ? 'Jogadores da rotação' : 'Participantes do campeonato'}</h3>${tournament.mode === 'dynamic' ? '<p>Os parceiros mudam, mas a campanha e a classificação pertencem a cada jogador.</p>' : ''}</div></div><div class="panel-body"><div class="participant-roster">${rosterPlayers.map((player,index)=>`<div class="roster-card">${avatarHtml(player.name,player.imageUrl,'roster-avatar')}<div><strong>${escapeHtml(player.name)}</strong>${tournament.mode === 'teams' ? `<small>${escapeHtml(player.team)}</small>` : tournament.mode === 'dynamic' ? '<small>Classificação individual</small>' : `<small>Participante ${String(index+1).padStart(2,'0')}</small>`}</div></div>`).join('')}</div></div></section>
   </div>`;
 }
 
@@ -2305,6 +2449,7 @@ function settingsTabHtml(tournament) {
     <div class="panel"><div class="panel-head"><div><h3>Configuração do campeonato</h3><p>Resumo das regras usadas na geração.</p></div></div><div class="panel-body"><table class="stats-table"><tbody>
       <tr><td>Jogo</td><td class="num"><strong>${profile.icon} ${escapeHtml(profile.label)}</strong></td></tr>
       <tr><td>Capa</td><td class="num">${tournament.coverImageUrl ? 'Imagem salva no Supabase Storage' : 'Sem imagem'}</td></tr>
+      <tr><td>Cor tema</td><td class="num"><span class="settings-theme-value"><i style="--theme:${tournament.themeColor}"></i><strong>${tournament.themeColor.toUpperCase()}</strong></span></td></tr>
       <tr><td>Placar registrado</td><td class="num">${profile.scoreLabel}</td></tr>
       <tr><td>Informação por lado</td><td class="num">${profile.choiceLabel}</td></tr>
       <tr><td>Formato</td><td class="num"><strong>${formatLabel(tournament.format)}</strong></td></tr>
@@ -2452,11 +2597,11 @@ function openMatchModal(tournamentId, matchId) {
   openModal(`
     <div class="modal-head game-${profile.id}"><div><div class="eyebrow">${profile.icon} ${escapeHtml(match.roundName)}</div><h2>Registrar partida de ${profile.label}</h2></div><button class="icon-button" data-close>×</button></div>
     <form id="matchForm">
-      <div class="modal-body stack game-match-form ${gameProfileClass(tournament)}">
+      <div class="modal-body stack game-match-form ${gameProfileClass(tournament)}" style="${themeStyle(tournament)}">
         ${matchGameFieldsHtml(tournament,match,home,away,knockout)}
         ${tournament.mode === 'teams' ? `<div class="grid cols-2">${lineupHtml(home,match.homeLineup,'home')}${lineupHtml(away,match.awayLineup,'away')}</div>` : ''}
         ${tournament.mode === 'dynamic' && match.stage === 'league' ? dynamicLineupHtml(tournament, match) : ''}
-        <div class="grid cols-2"><label class="field"><span>MVP da partida</span><select id="matchMvp"><option value="">Nenhum</option>${possibleMvp.map((player) => `<option value="${player.id}" ${match.mvpPlayerId === player.id ? 'selected' : ''}>${escapeHtml(player.name)}</option>`).join('')}</select></label><label class="field"><span>Observações</span><textarea id="matchNotes" placeholder="Anotações opcionais sobre a partida">${escapeHtml(match.notes || '')}</textarea></label></div>
+        <div class="center-mvp-row"><label class="field"><span>MVP da partida</span><select id="matchMvp"><option value="">Nenhum</option>${possibleMvp.map((player) => `<option value="${player.id}" ${match.mvpPlayerId === player.id ? 'selected' : ''}>${escapeHtml(player.name)}</option>`).join('')}</select></label></div>
       </div>
       <div class="modal-foot"><div>${match.played ? '<button class="button danger" type="button" data-clear-result>Limpar resultado</button>' : ''}</div><div style="display:flex;gap:8px"><button class="button ghost" type="button" data-close>Cancelar</button><button class="button primary" type="submit">Salvar resultado</button></div></div>
     </form>`,'wide');
@@ -2507,7 +2652,7 @@ function openMatchModal(tournamentId, matchId) {
     match.awayAssists = Number($('#awayAssists')?.value || 0);
     match.finishType = $('#finishType')?.value || '';
     match.mvpPlayerId = $('#matchMvp').value;
-    match.notes = $('#matchNotes').value.trim();
+    match.notes = $('#matchNotes')?.value?.trim() ?? match.notes ?? '';
     if (tournament.mode === 'teams') {
       match.homeLineup = $$('[name="homeLineup"]:checked').map((input) => input.value);
       match.awayLineup = $$('[name="awayLineup"]:checked').map((input) => input.value);
@@ -2677,11 +2822,11 @@ function gamesCenterEditorHtml(tournament, match) {
       <div class="center-duel-middle"><span>${escapeHtml(match.roundName)}</span>${tournamentEmblemHtml(tournament,'center-emblem')}<b>VS</b></div>
       <div class="center-duel-side away">${matchSideAvatarHtml(tournament,match,'away','center-avatar')}<strong>${escapeHtml(away.name)}</strong></div>
     </div>
-    <div class="center-form-scroll game-match-form ${gameProfileClass(tournament)}">
+    <div class="center-form-scroll game-match-form ${gameProfileClass(tournament)}" style="${themeStyle(tournament)}">
       ${matchGameFieldsHtml(tournament,match,home,away,knockout)}
       ${tournament.mode === 'teams' ? `<div class="grid cols-2">${lineupHtml(home,match.homeLineup,'home')}${lineupHtml(away,match.awayLineup,'away')}</div>` : ''}
       ${tournament.mode === 'dynamic' && match.stage === 'league' ? dynamicLineupHtml(tournament, match) : ''}
-      <div class="grid cols-2"><label class="field"><span>MVP da partida</span><select id="matchMvp"><option value="">Nenhum</option>${possibleMvp.map((player) => `<option value="${player.id}" ${match.mvpPlayerId === player.id ? 'selected' : ''}>${escapeHtml(player.name)}</option>`).join('')}</select></label><label class="field"><span>Observações</span><textarea id="matchNotes" placeholder="Anotações opcionais sobre a partida">${escapeHtml(match.notes || '')}</textarea></label></div>
+      <div class="center-mvp-row"><label class="field"><span>MVP da partida</span><select id="matchMvp"><option value="">Nenhum</option>${possibleMvp.map((player) => `<option value="${player.id}" ${match.mvpPlayerId === player.id ? 'selected' : ''}>${escapeHtml(player.name)}</option>`).join('')}</select></label></div>
     </div>
     <div class="center-form-actions">${match.played ? '<button class="button danger" type="button" data-center-clear>Limpar resultado</button>' : '<span></span>'}<button class="button primary" type="submit">${match.played ? 'Salvar alterações' : 'Registrar resultado'}</button></div>
   </form>`;
@@ -2762,7 +2907,7 @@ async function saveMatchFromForm(tournament, match) {
     homeDeaths: Number($('#homeDeaths')?.value || 0), awayDeaths: Number($('#awayDeaths')?.value || 0),
     homeAssists: Number($('#homeAssists')?.value || 0), awayAssists: Number($('#awayAssists')?.value || 0),
     finishType: $('#finishType')?.value || '', mvpPlayerId: $('#matchMvp').value,
-    notes: $('#matchNotes').value.trim()
+    notes: $('#matchNotes')?.value?.trim() ?? match.notes ?? ''
   });
   if (tournament.mode === 'teams') {
     match.homeLineup = $$('[name="homeLineup"]:checked').map((input) => input.value);
@@ -2792,10 +2937,24 @@ function openTournamentEditModal(tournamentId) {
     <form id="tournamentEditForm"><div class="modal-body stack">
       <div class="media-editor-hero"><div class="media-editor-preview cover" id="tournamentCoverPreview">${tournament.coverImageUrl ? `<img src="${escapeHtml(tournament.coverImageUrl)}" alt="">` : `<b>${profile.icon}</b>`}</div><div><h3>Capa do campeonato</h3><p>JPG, PNG ou WebP de até 5 MB. A imagem será salva no Supabase Storage.</p><label class="button secondary file-button">Selecionar imagem<input id="tournamentCoverFile" type="file" accept="image/*"></label><button type="button" class="button ghost" data-remove-cover>Remover capa</button></div></div>
       <div class="grid cols-2"><label class="field"><span>Nome do campeonato</span><input id="editTournamentName" value="${escapeHtml(tournament.name)}" required></label><label class="field"><span>Perfil do jogo</span><select id="editGameProfile">${Object.values(GAME_PROFILES).map((item) => `<option value="${item.id}" ${profile.id === item.id ? 'selected' : ''}>${item.label}</option>`).join('')}</select><small>Ao trocar o jogo, os placares permanecem; campos específicos antigos serão limpos.</small></label></div>
+      <section class="theme-edit-section"><div><span class="panel-kicker">IDENTIDADE VISUAL</span><h3>Cor tema do campeonato</h3><p>A alteração é aplicada imediatamente em toda a competição.</p></div>${themePickerHtml('editThemeColor', tournament.themeColor)}</section>
       <input id="removeTournamentCover" type="hidden" value="0">
     </div><div class="modal-foot"><button type="button" class="button ghost" data-close>Cancelar</button><button class="button primary" type="submit">Salvar alterações</button></div></form>`, 'wide');
+  $('.modal')?.setAttribute('style', themeStyle(tournament));
   $$('[data-close]').forEach((button) => button.addEventListener('click', closeModal));
   bindLocalImagePreview($('#tournamentCoverFile'), $('#tournamentCoverPreview'), tournament.name);
+  $('#editThemeColor')?.addEventListener('input', (event) => {
+    const color = normalizeHexColor(event.target.value, tournament.themeColor);
+    $('.modal')?.setAttribute('style', themeStyle(color));
+    const preview = $('.theme-preview'); if (preview) preview.style.setProperty('--preview', color);
+    const label = $('.theme-picker-main strong'); if (label) label.textContent = color.toUpperCase();
+  });
+  $$('[data-theme-value]').forEach((button) => button.addEventListener('click', () => {
+    const color = normalizeHexColor(button.dataset.themeValue);
+    $('#editThemeColor').value = color;
+    $('#editThemeColor').dispatchEvent(new Event('input', { bubbles:true }));
+    $$('.theme-swatch').forEach((item)=>item.classList.toggle('active', item.dataset.themeValue === color));
+  }));
   $('[data-remove-cover]').addEventListener('click', () => { $('#removeTournamentCover').value = '1'; $('#tournamentCoverFile').value = ''; $('#tournamentCoverPreview').innerHTML = `<b>${profile.icon}</b>`; });
   $('#tournamentEditForm').addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -2810,6 +2969,7 @@ function openTournamentEditModal(tournamentId) {
       if (file) tournament.coverImageUrl = await uploadMediaFile(file, `tournaments/${tournament.id}`);
       if ($('#removeTournamentCover').value === '1') tournament.coverImageUrl = '';
       tournament.name = newName;
+      tournament.themeColor = normalizeHexColor($('#editThemeColor')?.value, tournament.themeColor || defaultThemeColor(newProfileId));
       if (newProfileId !== tournament.gameProfile) {
         tournament.gameProfile = newProfileId;
         const nextProfile = getGameProfile(newProfileId);
@@ -3249,6 +3409,7 @@ function showChampionCelebration(tournament) {
   const profile = getGameProfile(tournament);
   const overlay = document.createElement('div');
   overlay.className = `champion-celebration ${gameProfileClass(tournament)}`;
+  overlay.setAttribute('style', themeStyle(tournament));
   overlay.innerHTML = `
     <div class="champion-effects" aria-hidden="true">${championCelebrationParticles()}</div>
     <div class="champion-stage">
@@ -3295,9 +3456,9 @@ openGamesCenter = function(tournamentId, requestedMatchId = '', requestedContext
   const playable = centerPlayableMatches(tournament);
   const activeMatches = activePhase === 'league' ? leagueMatches(tournament) : knockoutMatches(tournament);
   const activeDone = activeMatches.filter((match)=>match.played).length;
-  const coverStyle = tournament.coverImageUrl ? `style="--games-cover:url('${escapeHtml(tournament.coverImageUrl)}')"` : '';
+  const centerStyle = `${themeStyle(tournament)}${tournament.coverImageUrl ? `;--games-cover:url('${escapeHtml(tournament.coverImageUrl)}')` : ''}`;
 
-  openModal(`<div class="games-center ${gameProfileClass(tournament)} ${tournament.coverImageUrl ? 'has-cover' : ''}" ${coverStyle}>
+  openModal(`<div class="games-center ${gameProfileClass(tournament)} ${tournament.coverImageUrl ? 'has-cover' : ''}" style="${centerStyle}">
     <header class="games-center-head">
       <div class="games-cover-shade"></div>
       <div class="games-center-title"><span>${profile.icon} CENTRAL DE JOGOS</span><h2>${escapeHtml(tournament.name)}</h2><small>${formatLabel(tournament.format)} · ${modeLabel(tournament.mode)}</small></div>
@@ -3311,14 +3472,12 @@ openGamesCenter = function(tournamentId, requestedMatchId = '', requestedContext
         ${gamesCenterContextHtml(tournament, contextMode)}
       </div>
       <section class="games-center-statistics" id="gamesCenterStatistics">
-        <div class="games-center-statistics-head"><div><span>ESTATÍSTICAS</span><h3>Painel completo do campeonato</h3><p>Role a Central de Jogos para acompanhar todos os números sem sair desta tela.</p></div><button type="button" class="button ghost" data-center-scroll-top>Voltar aos confrontos</button></div>
         ${statisticsTabHtml(tournament)}
       </section>
     </div>
   </div>`, 'full-screen games-center-modal');
 
   $('[data-close]')?.addEventListener('click', closeModal);
-  $('[data-center-scroll-top]')?.addEventListener('click', () => document.querySelector('.games-center-body')?.scrollTo({ top:0, behavior:'smooth' }));
   $$('[data-center-match]').forEach((button) => button.addEventListener('click', () => openGamesCenter(tournamentId, button.dataset.centerMatch, contextMode)));
   $$('[data-center-context]').forEach((button) => button.addEventListener('click', () => openGamesCenter(tournamentId, selected?.id || '', button.dataset.centerContext)));
   $$('[data-center-bracket-match]').forEach((button) => button.addEventListener('click', () => openGamesCenter(tournamentId, button.dataset.centerBracketMatch, 'knockout')));
@@ -3424,7 +3583,7 @@ saveMatchFromForm = async function(tournament, match) {
     awayAssists: Number($('#awayAssists')?.value || 0),
     finishType: $('#finishType')?.value || '',
     mvpPlayerId: $('#matchMvp').value,
-    notes: $('#matchNotes').value.trim()
+    notes: $('#matchNotes')?.value?.trim() ?? match.notes ?? ''
   });
 
   if (tournament.mode === 'teams') {

@@ -44,8 +44,16 @@ O projeto continua sem login, conforme solicitado. Portanto, quem tiver acesso �
 - O painel lateral permite alternar entre Liga e mapa completo do mata-mata.
 
 
-## V11.4
+## V11.5
 - Chave da Central posiciona a fase atual sem cortar a fase anterior.
 - Foto do campeão substitui o ícone no cabeçalho após o título.
 - Estatísticas completas ficam abaixo da Central de Jogos no mesmo popup.
 - Celebração do campeão reforçada para o último jogo da liga e a final do mata-mata.
+
+
+## V11.5
+- Cabeçalho usa a imagem do campeonato, não a foto do campeão.
+- Central de Jogos sem campo de observações e com cartões de placar refinados.
+- Estatísticas aparecem diretamente abaixo da Central, sem faixa intermediária.
+- Fotos dos jogadores nas tabelas e no elenco estatístico.
+- Cor tema configurável na criação e na edição do campeonato.
