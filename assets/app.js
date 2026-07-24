@@ -200,7 +200,10 @@ const state = {
   assetSearchTimers: {}
 };
 
-const formatLabel = (format) => ({ league: 'Liga', knockout: 'Mata-mata', mixed: 'Liga + mata-mata' }[format] || format);
+const formatLabel = (format) => ({ league: 'Liga', knockout: 'Mata-mata', mixed: 'Liga + mata-mata', milton: 'Formato Milton', fabio: 'Liga Fábio' }[format] || format);
+const isHybridFormat = (format) => ['mixed','milton','fabio'].includes(format);
+const hasLeagueFormat = (format) => ['league','mixed','milton','fabio'].includes(format);
+const hasKnockoutFormat = (format) => ['knockout','mixed','milton','fabio'].includes(format);
 const modeLabel = (mode) => ({
   individual: 'Individual',
   teams: 'Equipes fixas',
@@ -293,10 +296,12 @@ function loadLocalData() {
 function normalizeTournament(raw) {
   if (!raw || typeof raw !== 'object') return raw;
   const tournament = clone(raw);
-  tournament.version = Math.max(Number(tournament.version || 0), 11);
+  tournament.version = Math.max(Number(tournament.version || 0), 13);
   tournament.gameProfile = tournament.gameProfile || detectGameProfile(tournament.game);
   const profile = getGameProfile(tournament.gameProfile);
   tournament.game = profile.label;
+  if (tournament.format === 'milton') tournament.mode = 'dynamic';
+  if (tournament.format === 'fabio') tournament.mode = 'individual';
   tournament.coverImageUrl = tournament.coverImageUrl || tournament.cover_image_url || '';
   tournament.themeColor = normalizeHexColor(tournament.themeColor, defaultThemeColor(tournament.gameProfile));
   tournament.participants = (tournament.participants || []).map((participant) => {
@@ -328,6 +333,10 @@ function normalizeTournament(raw) {
     dynamicFormation: tournament.settings?.dynamicFormation || 'balanced',
     dynamicRounds: Math.max(1, Number(tournament.settings?.dynamicRounds || 5)),
     dynamicBlockRounds: Math.max(1, Number(tournament.settings?.dynamicBlockRounds || 2)),
+    miltonGamesPerPlayer: Math.max(1, Number(tournament.settings?.miltonGamesPerPlayer || tournament.settings?.dynamicRounds || 4)),
+    fabioQualifiersPerGroup: Math.max(1, Number(tournament.settings?.fabioQualifiersPerGroup || Math.max(1, Math.floor(Number(tournament.settings?.qualifiers || 2) / 2)))),
+    fabioGroupPairing: tournament.settings?.fabioGroupPairing || (tournament.settings?.knockoutPairing === 'draw' ? 'draw' : 'crossed'),
+    groupAssignments: tournament.settings?.groupAssignments || {},
     knockoutUnit: tournament.settings?.knockoutUnit || 'individual'
   };
   tournament.matches = (tournament.matches || []).map((match) => {
@@ -349,6 +358,7 @@ function normalizeTournament(raw) {
       awayAssists: Number(match.awayAssists ?? match.gameData?.awayAssists ?? 0),
       finishType: match.finishType || match.gameData?.finishType || '',
       dynamicTeam: Boolean(match.dynamicTeam),
+      groupKey: match.groupKey || match.group || '',
       homeLabel: match.homeLabel || '',
       awayLabel: match.awayLabel || ''
     };
@@ -363,7 +373,7 @@ function normalizeTournament(raw) {
   };
   tournament.knockoutState.initialByes = tournament.knockoutState.initialByes || [...(tournament.knockoutState.pendingByes || [])];
   tournament.knockoutState.pairing = tournament.knockoutState.pairing || (tournament.knockoutState.seeded ? 'seeded' : tournament.settings.knockoutPairing || 'draw');
-  tournament.knockoutState.seeded = tournament.knockoutState.pairing === 'seeded';
+  tournament.knockoutState.seeded = ['seeded','crossed'].includes(tournament.knockoutState.pairing);
   tournament.extraLabel = profile.choiceLabel;
   tournament.createdAt = tournament.createdAt || tournament.created_at || now();
   tournament.updatedAt = tournament.updatedAt || tournament.updated_at || tournament.createdAt;
@@ -474,7 +484,7 @@ function updateTournamentStatus(tournament) {
 
 function currentStageLabel(tournament) {
   if (tournament.championId) return 'Finalizado';
-  if (tournament.format === 'mixed') return tournament.knockoutState?.started ? 'Mata-mata' : 'Liga classificatória';
+  if (isHybridFormat(tournament.format)) return tournament.knockoutState?.started ? 'Mata-mata' : (tournament.format === 'fabio' ? 'Fase de grupos' : 'Liga classificatória');
   return tournament.format === 'league' ? 'Liga' : 'Mata-mata';
 }
 
@@ -580,6 +590,9 @@ function newWizardState() {
     dynamicFormation: 'balanced',
     dynamicRounds: 7,
     dynamicBlockRounds: 2,
+    miltonGamesPerPlayer: 4,
+    fabioQualifiersPerGroup: 4,
+    fabioGroupPairing: 'crossed',
     knockoutUnit: 'individual'
   };
 }
@@ -670,17 +683,23 @@ function wizardFormatHtml(wizard) {
       </section>
       <section class="game-profile-section">
         <div class="section-title-line"><div><span>03</span><div><strong>Formato da competição</strong><small>Você poderá combinar liga e mata-mata.</small></div></div></div>
-        <div class="choice-grid">
+        <div class="choice-grid format-choice-grid">
           ${formatChoice('league','Liga','Todos enfrentam todos. A classificação final define o campeão.',wizard.format)}
           ${formatChoice('knockout','Mata-mata','Confrontos eliminatórios com folgas corretas quando necessário.',wizard.format)}
           ${formatChoice('mixed','Liga + mata-mata','A liga classifica e depois gera uma chave eliminatória.',wizard.format)}
+          ${formatChoice('milton','Formato Milton','Liga 2v2 com duplas sempre diferentes, pontuação individual e mata-mata 1v1.',wizard.format)}
+          ${formatChoice('fabio','Liga Fábio','Dois grupos com liga interna e classificados cruzando no mata-mata.',wizard.format)}
         </div>
       </section>
-      <label class="field"><span>Modelo dos participantes</span><select id="wizardMode">
-        <option value="individual" ${wizard.mode === 'individual' ? 'selected' : ''}>Individual durante todo o campeonato</option>
-        <option value="teams" ${wizard.mode === 'teams' ? 'selected' : ''}>Equipes fixas durante todo o campeonato</option>
-        <option value="dynamic" ${wizard.mode === 'dynamic' ? 'selected' : ''} ${wizard.format === 'knockout' ? 'disabled' : ''}>Equipes rotativas na liga, classificação individual</option>
-      </select><small>${wizard.format === 'knockout' ? 'Equipes rotativas exigem uma fase de liga. Use Liga ou Liga + mata-mata.' : 'No modo rotativo, as duplas/trios mudam, mas os pontos pertencem a cada jogador.'}</small></label>
+      ${wizard.format === 'milton'
+        ? `<div class="notice special-format"><strong>Formato Milton:</strong> o campeonato usa jogadores individuais, duplas rotativas 2v2 na liga e mata-mata individual.</div>`
+        : wizard.format === 'fabio'
+          ? `<div class="notice special-format"><strong>Liga Fábio:</strong> os jogadores são sorteados em dois grupos e disputam apenas contra integrantes do próprio grupo.</div>`
+          : `<label class="field"><span>Modelo dos participantes</span><select id="wizardMode">
+            <option value="individual" ${wizard.mode === 'individual' ? 'selected' : ''}>Individual durante todo o campeonato</option>
+            <option value="teams" ${wizard.mode === 'teams' ? 'selected' : ''}>Equipes fixas durante todo o campeonato</option>
+            <option value="dynamic" ${wizard.mode === 'dynamic' ? 'selected' : ''} ${wizard.format === 'knockout' ? 'disabled' : ''}>Equipes rotativas na liga, classificação individual</option>
+          </select><small>${wizard.format === 'knockout' ? 'Equipes rotativas exigem uma fase de liga. Use Liga ou Liga + mata-mata.' : 'No modo rotativo, as duplas/trios mudam, mas os pontos pertencem a cada jogador.'}</small></label>`}
     </div>`;
 }
 
@@ -698,9 +717,13 @@ function gameChoice(profile, selected) {
 
 function wizardParticipantsHtml(wizard) {
   if (wizard.mode === 'teams') return wizardTeamsHtml(wizard);
-  const dynamicCopy = wizard.mode === 'dynamic'
-    ? 'Estes jogadores serão misturados em equipes temporárias. A classificação continuará sendo individual.'
-    : 'Adicione os nomes diretamente aqui. Não existe cadastro separado nem ranking geral fora do campeonato.';
+  const dynamicCopy = wizard.format === 'milton'
+    ? 'Adicione um número par de jogadores. As duplas serão sorteadas sem repetir companheiros e a classificação será individual.'
+    : wizard.format === 'fabio'
+      ? 'Os jogadores serão sorteados automaticamente entre Grupo A e Grupo B, com quantidades equilibradas.'
+      : wizard.mode === 'dynamic'
+        ? 'Estes jogadores serão misturados em equipes temporárias. A classificação continuará sendo individual.'
+        : 'Adicione os nomes diretamente aqui. Não existe cadastro separado nem ranking geral fora do campeonato.';
   return `<h3>Jogadores deste campeonato</h3><p>${dynamicCopy}</p>
     <div class="stack">
       <div class="entry-add"><input id="entrantInput" placeholder="Digite o nome e pressione Enter"><button class="button primary" type="button" data-add-entrant>Adicionar</button></div>
@@ -727,51 +750,146 @@ function teamWizardHtml(team, index) {
   </section>`;
 }
 
+function validMiltonGamesPerPlayer(participantCount) {
+  const count = Number(participantCount) || 0;
+  if (count < 4 || count % 2 !== 0) return [];
+  const result = [];
+  for (let games = 1; games <= count - 1; games += 1) {
+    if ((count * games) % 4 === 0) result.push(games);
+  }
+  return result;
+}
+
+function miltonPlan(participantCount, gamesPerPlayer) {
+  const count = Number(participantCount) || 0;
+  const games = Number(gamesPerPlayer) || 0;
+  return {
+    players: count,
+    gamesPerPlayer: games,
+    totalMatches: Number.isInteger((count * games) / 4) ? (count * games) / 4 : 0,
+    uniquePartnersPerPlayer: games,
+    valid: count >= 4 && count % 2 === 0 && games >= 1 && games <= count - 1 && (count * games) % 4 === 0
+  };
+}
+
+function fabioGroupSizes(participantCount) {
+  const count = Math.max(0, Number(participantCount) || 0);
+  return [Math.ceil(count / 2), Math.floor(count / 2)];
+}
+
+function fabioLeagueMatchesCount(participantCount, legs = 1) {
+  const [a, b] = fabioGroupSizes(participantCount);
+  return ((a * (a - 1)) / 2 + (b * (b - 1)) / 2) * Math.max(1, Number(legs) || 1);
+}
+
+function miltonRulesHtml(wizard, participantCount) {
+  const validGames = validMiltonGamesPerPlayer(participantCount);
+  if (!validGames.includes(Number(wizard.miltonGamesPerPlayer))) {
+    wizard.miltonGamesPerPlayer = validGames.includes(4) ? 4 : (validGames[0] || 1);
+  }
+  const plan = miltonPlan(participantCount, wizard.miltonGamesPerPlayer);
+  return `<section class="rule-section special-format-rules milton-rules">
+    <div class="rule-section-head"><div><span class="section-number">M</span><div><h3>Formato Milton · liga 2v2</h3><p>Duplas aleatórias sem repetição de companheiro, com a mesma quantidade de jogos para todos.</p></div></div></div>
+    <div class="grid cols-3">
+      <label class="field"><span>Jogos por jogador</span><select id="wizardMiltonGames">${validGames.map((value) => `<option value="${value}" ${wizard.miltonGamesPerPlayer === value ? 'selected' : ''}>${value} jogos por jogador</option>`).join('')}</select><small>O sistema mostra apenas quantidades matematicamente possíveis.</small></label>
+      <label class="field"><span>Pontos por vitória</span><input id="wizardPointsWin" type="number" min="1" value="${wizard.pointsWin}"></label>
+      <label class="field"><span>Pontos por empate</span><input id="wizardPointsDraw" type="number" min="0" value="${wizard.pointsDraw}"></label>
+    </div>
+    <div class="dynamic-plan special-plan">
+      <div><span>FORMATO</span><strong>2v2 rotativo</strong></div>
+      <div><span>JOGOS POR JOGADOR</span><strong>${plan.gamesPerPlayer}</strong></div>
+      <div><span>TOTAL DE PARTIDAS</span><strong>${plan.totalMatches}</strong></div>
+      <div><span>DUPLA REPETIDA</span><strong>0</strong></div>
+    </div>
+    <div class="notice info">Cada jogador terá ${plan.gamesPerPlayer} companheiros diferentes. Os pontos da equipe vencedora serão lançados individualmente para os dois integrantes. O mata-mata será 1v1.</div>
+    ${participantCount && participantCount % 4 !== 0 ? `<div class="notice warning">Com ${participantCount} jogadores, nem todos conseguem atuar simultaneamente em cada rodada. O calendário cria partidas complementares, mas todos terminam com exatamente ${plan.gamesPerPlayer} jogos.</div>` : ''}
+  </section>`;
+}
+
+function fabioRulesHtml(wizard, participantCount) {
+  const [groupA, groupB] = fabioGroupSizes(participantCount);
+  const maxPerGroup = Math.max(1, Math.min(groupA, groupB));
+  wizard.fabioQualifiersPerGroup = Math.min(maxPerGroup, Math.max(1, Number(wizard.fabioQualifiersPerGroup) || Math.min(4, maxPerGroup)));
+  wizard.qualifiers = wizard.fabioQualifiersPerGroup * 2;
+  return `<section class="rule-section special-format-rules fabio-rules">
+    <div class="rule-section-head"><div><span class="section-number">F</span><div><h3>Liga Fábio · dois grupos</h3><p>Os jogadores disputam somente dentro do próprio grupo. Os melhores de cada grupo avançam.</p></div></div></div>
+    <div class="grid cols-3">
+      <label class="field"><span>Turnos em cada grupo</span><select id="wizardLeagueLegs"><option value="1" ${wizard.leagueLegs === 1 ? 'selected' : ''}>Turno único</option><option value="2" ${wizard.leagueLegs === 2 ? 'selected' : ''}>Ida e volta</option></select></label>
+      <label class="field"><span>Classificados por grupo</span><input id="wizardFabioQualifiers" type="number" min="1" max="${maxPerGroup}" value="${wizard.fabioQualifiersPerGroup}"><small>Total no mata-mata: ${wizard.fabioQualifiersPerGroup * 2}.</small></label>
+      <label class="field"><span>Pontos por vitória</span><input id="wizardPointsWin" type="number" min="1" value="${wizard.pointsWin}"></label>
+    </div>
+    <div class="grid cols-2"><label class="field"><span>Pontos por empate</span><input id="wizardPointsDraw" type="number" min="0" value="${wizard.pointsDraw}"></label><div class="fabio-groups-preview"><span>GRUPO A</span><strong>${groupA} jogadores</strong><span>GRUPO B</span><strong>${groupB} jogadores</strong></div></div>
+    <div class="dynamic-plan special-plan">
+      <div><span>GRUPOS</span><strong>2</strong></div>
+      <div><span>JOGOS DA FASE</span><strong>${fabioLeagueMatchesCount(participantCount, wizard.leagueLegs)}</strong></div>
+      <div><span>CLASSIFICADOS</span><strong>${wizard.fabioQualifiersPerGroup * 2}</strong></div>
+      <div><span>ELIMINADOS</span><strong>${Math.max(0, participantCount - wizard.fabioQualifiersPerGroup * 2)}</strong></div>
+    </div>
+  </section>`;
+}
+
 function wizardRulesHtml(wizard) {
   const participantCount = wizard.mode === 'teams' ? wizard.teams.length : wizard.entrants.length;
-  if (wizard.mode === 'dynamic') {
+  if (wizard.format === 'milton') {
+    wizard.mode = 'dynamic';
+    wizard.dynamicTeamSize = 2;
+    wizard.dynamicFormation = 'milton';
+    wizard.leagueLegs = 1;
+  } else if (wizard.format === 'fabio') {
+    wizard.mode = 'individual';
+  } else if (wizard.mode === 'dynamic') {
     wizard.dynamicTeamSize = Math.min(Math.max(2, Number(wizard.dynamicTeamSize) || 2), Math.max(2, Math.floor(participantCount / 2)));
     wizard.dynamicRounds = Math.max(1, Number(wizard.dynamicRounds) || recommendedDynamicRounds(participantCount, wizard.dynamicTeamSize));
     wizard.leagueLegs = 1;
   }
-  const fullCounts = fullBracketCounts(participantCount);
-  if (wizard.format === 'mixed') {
-    wizard.qualifiers = Math.min(Math.max(2, Number(wizard.qualifiers) || 2), participantCount);
-    if (wizard.bracketMode === 'complete' && !fullCounts.includes(wizard.qualifiers)) {
-      wizard.qualifiers = fullCounts[fullCounts.length - 1] || 2;
-    }
+
+  const hybrid = isHybridFormat(wizard.format);
+  if (wizard.format === 'fabio') {
+    const [, smallerGroup] = fabioGroupSizes(participantCount);
+    wizard.fabioQualifiersPerGroup = Math.min(Math.max(1, Number(wizard.fabioQualifiersPerGroup || 1)), Math.max(1, smallerGroup));
+    wizard.qualifiers = wizard.fabioQualifiersPerGroup * 2;
   }
-  const plan = getBracketPlan(wizard.format === 'mixed' ? wizard.qualifiers : participantCount);
-  return `<h3>Regras e montagem da chave</h3><p>Defina a liga e, no formato misto, como os classificados serão colocados no mata-mata.</p>
+  if (hybrid && wizard.format !== 'fabio') wizard.qualifiers = Math.min(Math.max(2, Number(wizard.qualifiers) || 2), participantCount);
+  const knockoutTotal = hybrid ? wizard.qualifiers : participantCount;
+  const fullCounts = fullBracketCounts(Math.max(2, knockoutTotal));
+  if (hybrid && wizard.bracketMode === 'complete' && !isPowerOfTwo(knockoutTotal)) wizard.bracketMode = 'flexible';
+  const plan = getBracketPlan(knockoutTotal);
+
+  const leagueRules = wizard.format === 'milton'
+    ? miltonRulesHtml(wizard, participantCount)
+    : wizard.format === 'fabio'
+      ? fabioRulesHtml(wizard, participantCount)
+      : wizard.format !== 'knockout'
+        ? (wizard.mode === 'dynamic' ? dynamicLeagueRulesHtml(wizard, participantCount) : `<div class="grid cols-3">
+            <label class="field"><span>Turnos da liga</span><select id="wizardLeagueLegs"><option value="1" ${wizard.leagueLegs === 1 ? 'selected' : ''}>Turno único</option><option value="2" ${wizard.leagueLegs === 2 ? 'selected' : ''}>Ida e volta</option></select></label>
+            <label class="field"><span>Pontos por vitória</span><input id="wizardPointsWin" type="number" min="1" value="${wizard.pointsWin}"></label>
+            <label class="field"><span>Pontos por empate</span><input id="wizardPointsDraw" type="number" min="0" value="${wizard.pointsDraw}"></label>
+          </div>`)
+        : '';
+
+  const pairingChoices = wizard.format === 'fabio'
+    ? `${ruleChoice('fabio-pairing','draw','Sorteio livre','Todos os classificados são embaralhados novamente.',wizard.fabioGroupPairing,'⇄')}${ruleChoice('fabio-pairing','crossed','Cruzamento entre grupos','1º do A enfrenta o último classificado do B; 1º do B enfrenta o último do A.',wizard.fabioGroupPairing,'A×B')}`
+    : `${ruleChoice('knockout-pairing','draw','Sorteio livre','Os classificados são embaralhados novamente. Qualquer jogador pode enfrentar qualquer outro.',wizard.knockoutPairing,'⇄')}${ruleChoice('knockout-pairing','seeded','Melhor contra pior','1º enfrenta o último classificado, 2º enfrenta o penúltimo e assim por diante.',wizard.knockoutPairing,'1×N')}`;
+
+  return `<h3>Regras e montagem da chave</h3><p>Defina a fase classificatória e como os classificados entrarão no mata-mata.</p>
     <div class="stack">
-      ${wizard.format !== 'knockout' ? `${wizard.mode === 'dynamic' ? dynamicLeagueRulesHtml(wizard, participantCount) : `<div class="grid cols-3">
-        <label class="field"><span>Turnos da liga</span><select id="wizardLeagueLegs"><option value="1" ${wizard.leagueLegs === 1 ? 'selected' : ''}>Turno único</option><option value="2" ${wizard.leagueLegs === 2 ? 'selected' : ''}>Ida e volta</option></select></label>
-        <label class="field"><span>Pontos por vitória</span><input id="wizardPointsWin" type="number" min="1" value="${wizard.pointsWin}"></label>
-        <label class="field"><span>Pontos por empate</span><input id="wizardPointsDraw" type="number" min="0" value="${wizard.pointsDraw}"></label>
-      </div>`}` : ''}
-      ${wizard.format === 'mixed' ? `<section class="rule-section">
-        <div class="rule-section-head"><div><span class="section-number">01</span><div><h3>Como montar os confrontos</h3><p>Escolha se a liga define apenas os classificados ou também define a posição deles na chave.</p></div></div></div>
-        <div class="choice-grid pairing-grid">
-          ${ruleChoice('knockout-pairing','draw','Sorteio livre','Os classificados são embaralhados novamente. Qualquer jogador pode enfrentar qualquer outro.',wizard.knockoutPairing,'⇄')}
-          ${ruleChoice('knockout-pairing','seeded','Melhor contra pior','1º enfrenta o último classificado, 2º enfrenta o penúltimo e assim por diante.',wizard.knockoutPairing,'1×N')}
-        </div>
+      ${leagueRules}
+      ${hybrid ? `<section class="rule-section">
+        <div class="rule-section-head"><div><span class="section-number">01</span><div><h3>Como montar o mata-mata</h3><p>${wizard.format === 'fabio' ? 'Escolha entre sorteio total ou cruzamento entre os dois grupos.' : 'Escolha se a liga define apenas os classificados ou também a posição deles na chave.'}</p></div></div></div>
+        <div class="choice-grid pairing-grid">${pairingChoices}</div>
       </section>
       <section class="rule-section">
-        <div class="rule-section-head"><div><span class="section-number">02</span><div><h3>Tamanho da chave</h3><p>Escolha uma chave fechada ou permita quantidades adaptadas com folgas explícitas.</p></div></div></div>
+        <div class="rule-section-head"><div><span class="section-number">02</span><div><h3>Tamanho da chave</h3><p>A chave é calculada pelo total de classificados.</p></div></div></div>
         <div class="choice-grid pairing-grid">
-          ${ruleChoice('bracket-mode','complete','Chave completa','Aceita somente 2, 4, 8, 16... classificados. Ninguém recebe folga.',wizard.bracketMode,'◆')}
-          ${ruleChoice('bracket-mode','flexible','Chave adaptada','Aceita 3, 5, 6, 7... O sistema mostra quem recebe folga e quem joga a preliminar.',wizard.bracketMode,'◇')}
+          ${ruleChoice('bracket-mode','complete','Chave completa','Aceita somente 2, 4, 8, 16... classificados.',wizard.bracketMode,'◆')}
+          ${ruleChoice('bracket-mode','flexible','Chave adaptada','Permite outras quantidades e mostra as folgas.',wizard.bracketMode,'◇')}
         </div>
-        <div class="qualifier-config">
-          <div class="quick-counts">${(wizard.bracketMode === 'complete' ? fullCounts : [2,4,6,8,16].filter((value) => value <= participantCount)).map((value) => `<button type="button" class="${wizard.qualifiers === value ? 'active' : ''}" data-qualifier-quick="${value}">${value}</button>`).join('')}</div>
-          <label class="field"><span>Quantidade de classificados</span>${wizard.bracketMode === 'complete'
-            ? `<select id="wizardQualifiers">${fullCounts.map((value) => `<option value="${value}" ${wizard.qualifiers === value ? 'selected' : ''}>${value} classificados</option>`).join('')}</select>`
-            : `<input id="wizardQualifiers" type="number" min="2" max="${participantCount}" value="${wizard.qualifiers}">`}<small>${wizard.bracketMode === 'complete' ? 'Com 7 participantes, por exemplo, a maior chave completa possível é de 4 classificados.' : 'Uma quantidade ímpar é possível, mas alguém recebe folga. Isso ficará visível na chave.'}</small></label>
-        </div>
-        ${bracketPlanHtml(plan, wizard.knockoutPairing)}
-      </section>` : `${wizard.format === 'knockout' ? bracketPlanHtml(plan, 'draw') : ''}`}
-      ${wizard.format !== 'league' ? `<label class="check-row"><input id="wizardThirdPlace" type="checkbox" ${wizard.thirdPlace ? 'checked' : ''}> Criar disputa de terceiro lugar</label>` : ''}
-      <div class="notice info">Desempates da liga: pontos, vitórias, saldo, pontos/gols marcados e ordem alfabética.</div>
+        ${wizard.format === 'milton' ? `<div class="qualifier-config"><label class="field"><span>Quantidade total de classificados</span><input id="wizardQualifiers" type="number" min="2" max="${participantCount}" value="${wizard.qualifiers}"></label></div>` : ''}
+        ${wizard.format === 'mixed' ? `<div class="qualifier-config"><div class="quick-counts">${(wizard.bracketMode === 'complete' ? fullBracketCounts(participantCount) : [2,4,6,8,16].filter((value)=>value<=participantCount)).map((value)=>`<button type="button" class="${wizard.qualifiers===value?'active':''}" data-qualifier-quick="${value}">${value}</button>`).join('')}</div><label class="field"><span>Quantidade de classificados</span>${wizard.bracketMode === 'complete' ? `<select id="wizardQualifiers">${fullBracketCounts(participantCount).map((value)=>`<option value="${value}" ${wizard.qualifiers===value?'selected':''}>${value} classificados</option>`).join('')}</select>` : `<input id="wizardQualifiers" type="number" min="2" max="${participantCount}" value="${wizard.qualifiers}">`}</label></div>` : ''}
+        ${bracketPlanHtml(plan, wizard.format === 'fabio' ? (wizard.fabioGroupPairing === 'draw' ? 'draw' : 'seeded') : wizard.knockoutPairing)}
+      </section>` : (wizard.format === 'knockout' ? bracketPlanHtml(plan, 'draw') : '')}
+      ${hasKnockoutFormat(wizard.format) ? `<label class="check-row"><input id="wizardThirdPlace" type="checkbox" ${wizard.thirdPlace ? 'checked' : ''}> Criar disputa de terceiro lugar</label>` : ''}
+      <div class="notice info">Desempates: pontos, vitórias, saldo, pontos/gols marcados e ordem alfabética.</div>
     </div>`;
 }
 
@@ -847,12 +965,37 @@ function wizardReviewHtml(wizard) {
   const participants = wizard.mode === 'teams' ? wizard.teams : wizard.entrants;
   const estimatedLeague = wizard.format === 'knockout'
     ? 0
-    : wizard.mode === 'dynamic'
-      ? dynamicLeaguePlan(participants.length, wizard.dynamicTeamSize, wizard.dynamicRounds).totalMatches
-      : (participants.length * (participants.length - 1) / 2) * wizard.leagueLegs;
-  const knockoutTotal = wizard.format === 'mixed' ? wizard.qualifiers : participants.length;
+    : wizard.format === 'milton'
+      ? miltonPlan(participants.length, wizard.miltonGamesPerPlayer).totalMatches
+      : wizard.format === 'fabio'
+        ? fabioLeagueMatchesCount(participants.length, wizard.leagueLegs)
+        : wizard.mode === 'dynamic'
+          ? dynamicLeaguePlan(participants.length, wizard.dynamicTeamSize, wizard.dynamicRounds).totalMatches
+          : (participants.length * (participants.length - 1) / 2) * wizard.leagueLegs;
+  const hybrid = isHybridFormat(wizard.format);
+  const knockoutTotal = hybrid ? wizard.qualifiers : participants.length;
   const plan = wizard.format === 'league' ? null : getBracketPlan(knockoutTotal);
   const profile = getGameProfile(wizard.gameProfile);
+  const specialSummary = wizard.format === 'milton'
+    ? `<div class="panel"><div class="panel-body"><table class="stats-table"><tbody>
+        <tr><td>Fase classificatória</td><td class="num"><strong>2v2 com duplas únicas</strong></td></tr>
+        <tr><td>Jogos por jogador</td><td class="num">${wizard.miltonGamesPerPlayer}</td></tr>
+        <tr><td>Classificação</td><td class="num">Individual</td></tr>
+        <tr><td>Fase final</td><td class="num"><strong>1v1</strong></td></tr>
+      </tbody></table></div></div>`
+    : wizard.format === 'fabio'
+      ? `<div class="panel"><div class="panel-body"><table class="stats-table"><tbody>
+          <tr><td>Fase classificatória</td><td class="num"><strong>2 grupos</strong></td></tr>
+          <tr><td>Classificados por grupo</td><td class="num">${wizard.fabioQualifiersPerGroup}</td></tr>
+          <tr><td>Cruzamento</td><td class="num">${wizard.fabioGroupPairing === 'draw' ? 'Sorteio livre' : 'Grupo A × Grupo B'}</td></tr>
+          <tr><td>Total no mata-mata</td><td class="num"><strong>${wizard.qualifiers}</strong></td></tr>
+        </tbody></table></div></div>`
+      : wizard.mode === 'dynamic'
+        ? `<div class="panel"><div class="panel-body"><table class="stats-table"><tbody>
+            <tr><td>Formato das partidas da liga</td><td class="num"><strong>${wizard.dynamicTeamSize}v${wizard.dynamicTeamSize}</strong></td></tr>
+            <tr><td>Formação dos times</td><td class="num">${wizard.dynamicFormation === 'balanced' ? 'Rotação equilibrada' : wizard.dynamicFormation === 'random' ? 'Novo sorteio em cada rodada' : `Blocos de ${wizard.dynamicBlockRounds} rodada(s)`}</td></tr>
+            <tr><td>Classificação</td><td class="num">Individual</td></tr>
+          </tbody></table></div></div>` : '';
   return `<h3>Revisar estrutura</h3><p>Confira o formato antes de criar. O sistema usará o perfil ${profile.label} em todos os jogos e estatísticas.</p>
     <div class="stack">
       <div class="review-hero game-${profile.id}" style="${themeStyle(wizard.themeColor)}">
@@ -863,23 +1006,17 @@ function wizardReviewHtml(wizard) {
         <div class="review-stat"><span>Participantes</span><strong>${participants.length}</strong></div>
         <div class="review-stat"><span>Modelo</span><strong>${modeLabel(wizard.mode)}</strong></div>
         <div class="review-stat"><span>Cor tema</span><strong><i class="review-theme-dot" style="--theme:${wizard.themeColor}"></i>${wizard.themeColor.toUpperCase()}</strong></div>
-        ${wizard.format !== 'knockout' ? `<div class="review-stat"><span>Jogos da liga</span><strong>${estimatedLeague}</strong></div>` : ''}
-        ${wizard.format === 'mixed' ? `<div class="review-stat"><span>Classificados</span><strong>${wizard.qualifiers}</strong></div>` : ''}
+        ${hasLeagueFormat(wizard.format) ? `<div class="review-stat"><span>Jogos da fase</span><strong>${estimatedLeague}</strong></div>` : ''}
+        ${hybrid ? `<div class="review-stat"><span>Classificados</span><strong>${wizard.qualifiers}</strong></div>` : ''}
         ${plan ? `<div class="review-stat"><span>Folgas iniciais</span><strong>${plan.byes}</strong></div>` : ''}
       </div>
       <div class="profile-review-strip game-${profile.id}"><div><span>PLACAR</span><strong>${profile.scoreLabel}</strong></div><div><span>ESCOLHA</span><strong>${profile.choiceLabel}</strong></div><div><span>ESTATÍSTICAS</span><strong>${profile.id === 'lol' ? 'K/D/A e KDA' : profile.id === 'fifa' ? 'Gols e times' : 'Pontos e finalizações'}</strong></div></div>
-      ${wizard.mode === 'dynamic' ? `<div class="panel"><div class="panel-body"><table class="stats-table"><tbody>
-        <tr><td>Formato das partidas da liga</td><td class="num"><strong>${wizard.dynamicTeamSize}v${wizard.dynamicTeamSize}</strong></td></tr>
-        <tr><td>Formação dos times</td><td class="num">${wizard.dynamicFormation === 'balanced' ? 'Rotação equilibrada' : wizard.dynamicFormation === 'random' ? 'Novo sorteio em cada rodada' : `Blocos de ${wizard.dynamicBlockRounds} rodada(s)`}</td></tr>
-        <tr><td>Classificação</td><td class="num">Individual; todos os integrantes recebem o resultado do time</td></tr>
-        ${wizard.format === 'mixed' ? '<tr><td>Fase final</td><td class="num"><strong>Individual (1v1)</strong></td></tr>' : ''}
+      ${specialSummary}
+      ${hybrid ? `<div class="panel"><div class="panel-body"><table class="stats-table"><tbody>
+        <tr><td>Estrutura da chave</td><td class="num">${wizard.bracketMode === 'complete' ? 'Completa' : 'Adaptada'}</td></tr>
+        <tr><td>Primeira fase eliminatória</td><td class="num">${plan.preliminaryMatches ? `${plan.preliminaryMatches} preliminar(es) + ${plan.byes} folga(s)` : knockoutRoundName(plan.total)}</td></tr>
       </tbody></table></div></div>` : ''}
-      ${wizard.format === 'mixed' ? `<div class="panel"><div class="panel-body"><table class="stats-table"><tbody>
-        <tr><td>Cruzamento do mata-mata</td><td class="num"><strong>${wizard.knockoutPairing === 'seeded' ? 'Melhor contra pior' : 'Sorteio livre'}</strong></td></tr>
-        <tr><td>Estrutura da chave</td><td class="num">${wizard.bracketMode === 'complete' ? 'Completa, sem folgas' : 'Adaptada, com folgas quando necessário'}</td></tr>
-        <tr><td>Primeira fase eliminatória</td><td class="num">${plan.preliminaryMatches ? `${plan.preliminaryMatches} jogo(s) preliminar(es) + ${plan.byes} folga(s)` : knockoutRoundName(plan.total)}</td></tr>
-      </tbody></table></div></div>` : ''}
-      <div class="notice warning">O sorteio da fase inicial poderá ser refeito enquanto nenhum resultado tiver sido registrado.</div>
+      <div class="notice warning">O sorteio inicial poderá ser refeito enquanto nenhum resultado tiver sido registrado.</div>
     </div>`;
 }
 
@@ -905,18 +1042,37 @@ function bindWizardStepEvents() {
   }));
   $$('[data-format-choice]').forEach((choice) => choice.addEventListener('click', () => {
     wizard.format = choice.dataset.formatChoice;
-    if (wizard.format === 'knockout' && wizard.mode === 'dynamic') wizard.mode = 'individual';
+    if (wizard.format === 'milton') {
+      wizard.mode = 'dynamic';
+      wizard.dynamicTeamSize = 2;
+      wizard.dynamicFormation = 'milton';
+      wizard.knockoutPairing = wizard.knockoutPairing === 'draw' ? 'draw' : 'seeded';
+    } else if (wizard.format === 'fabio') {
+      wizard.mode = 'individual';
+      wizard.knockoutPairing = wizard.fabioGroupPairing === 'draw' ? 'draw' : 'crossed';
+    } else if (wizard.format === 'knockout' && wizard.mode === 'dynamic') wizard.mode = 'individual';
     renderWizard();
   }));
   $$('[data-rule-choice]').forEach((choice) => choice.addEventListener('click', () => {
     const [group, value] = choice.dataset.ruleChoice.split(':');
     if (group === 'knockout-pairing') wizard.knockoutPairing = value;
+    if (group === 'fabio-pairing') {
+      wizard.fabioGroupPairing = value;
+      wizard.knockoutPairing = value === 'draw' ? 'draw' : 'crossed';
+    }
     if (group === 'bracket-mode') {
       wizard.bracketMode = value;
       const total = wizard.mode === 'teams' ? wizard.teams.length : wizard.entrants.length;
       if (value === 'complete' && !isPowerOfTwo(wizard.qualifiers)) {
-        const options = fullBracketCounts(total);
-        wizard.qualifiers = options[options.length - 1] || 2;
+        if (wizard.format === 'fabio') {
+          const [, smallerGroup] = fabioGroupSizes(total);
+          const validPerGroup = Array.from({ length: Math.max(1, smallerGroup) }, (_, index) => index + 1).filter((count) => isPowerOfTwo(count * 2));
+          wizard.fabioQualifiersPerGroup = validPerGroup[validPerGroup.length - 1] || 1;
+          wizard.qualifiers = wizard.fabioQualifiersPerGroup * 2;
+        } else {
+          const options = fullBracketCounts(total);
+          wizard.qualifiers = options[options.length - 1] || 2;
+        }
       }
     }
     renderWizard();
@@ -974,6 +1130,15 @@ function bindWizardStepEvents() {
     wizard.dynamicBlockRounds = Math.max(1, Number($('#wizardDynamicBlockRounds').value) || 1);
     renderWizard();
   });
+  $('#wizardMiltonGames')?.addEventListener('change', () => {
+    wizard.miltonGamesPerPlayer = Number($('#wizardMiltonGames').value);
+    renderWizard();
+  });
+  $('#wizardFabioQualifiers')?.addEventListener('change', () => {
+    wizard.fabioQualifiersPerGroup = Math.max(1, Number($('#wizardFabioQualifiers').value) || 1);
+    wizard.qualifiers = wizard.fabioQualifiersPerGroup * 2;
+    renderWizard();
+  });
 
   $$('[data-qualifier-quick]').forEach((button) => button.addEventListener('click', () => {
     wizard.qualifiers = Number(button.dataset.qualifierQuick);
@@ -1019,6 +1184,11 @@ function captureWizardFields() {
   if ($('#wizardDynamicFormation')) wizard.dynamicFormation = $('#wizardDynamicFormation').value;
   if ($('#wizardDynamicRounds')) wizard.dynamicRounds = Math.max(1, Number($('#wizardDynamicRounds').value) || 1);
   if ($('#wizardDynamicBlockRounds')) wizard.dynamicBlockRounds = Math.max(1, Number($('#wizardDynamicBlockRounds').value) || 1);
+  if ($('#wizardMiltonGames')) wizard.miltonGamesPerPlayer = Math.max(1, Number($('#wizardMiltonGames').value) || 1);
+  if ($('#wizardFabioQualifiers')) {
+    wizard.fabioQualifiersPerGroup = Math.max(1, Number($('#wizardFabioQualifiers').value) || 1);
+    wizard.qualifiers = wizard.fabioQualifiersPerGroup * 2;
+  }
 }
 
 function validateWizardStep(step) {
@@ -1026,7 +1196,7 @@ function validateWizardStep(step) {
   if (step === 1) {
     if (!wizard.name) return 'Informe o nome do campeonato.';
     if (!GAME_PROFILES[wizard.gameProfile]) return 'Escolha FIFA, League of Legends ou Beyblade.';
-    if (!['league','knockout','mixed'].includes(wizard.format)) return 'Escolha um formato válido.';
+    if (!['league','knockout','mixed','milton','fabio'].includes(wizard.format)) return 'Escolha um formato válido.';
   }
   if (step === 2) {
     if (wizard.mode === 'teams') {
@@ -1038,16 +1208,32 @@ function validateWizardStep(step) {
       wizard.entrants = wizard.entrants.map((item) => ({ ...item, name: item.name.trim() })).filter((item) => item.name);
       if (wizard.entrants.length < 2) return 'Adicione pelo menos dois jogadores.';
       if (wizard.entrants.length > 30) return 'Esta versão aceita até 30 jogadores por campeonato.';
+      if (wizard.format === 'milton' && (wizard.entrants.length < 4 || wizard.entrants.length % 2 !== 0)) return 'O Formato Milton exige um número par de jogadores e pelo menos quatro participantes.';
+      if (wizard.format === 'fabio' && wizard.entrants.length < 4) return 'A Liga Fábio exige pelo menos quatro jogadores para formar dois grupos.';
       if (wizard.mode === 'dynamic' && wizard.format === 'knockout') return 'Equipes rotativas precisam de uma fase de liga. Escolha Liga ou Liga + mata-mata.';
     }
   }
-  if (step === 3 && wizard.mode === 'dynamic') {
+  if (step === 3 && wizard.mode === 'dynamic' && wizard.format !== 'milton') {
     const totalPlayers = wizard.entrants.length;
     if (!Number.isInteger(wizard.dynamicTeamSize) || wizard.dynamicTeamSize < 2) return 'Escolha pelo menos dois jogadores por equipe.';
     if (totalPlayers < wizard.dynamicTeamSize * 2) return `Para ${wizard.dynamicTeamSize}v${wizard.dynamicTeamSize}, adicione pelo menos ${wizard.dynamicTeamSize * 2} jogadores.`;
     if (!['balanced','random','blocks'].includes(wizard.dynamicFormation)) return 'Escolha como as equipes temporárias serão formadas.';
     if (!Number.isInteger(wizard.dynamicRounds) || wizard.dynamicRounds < 1) return 'Informe pelo menos uma rodada para a liga.';
     if (wizard.dynamicFormation === 'blocks' && (!Number.isInteger(wizard.dynamicBlockRounds) || wizard.dynamicBlockRounds < 1 || wizard.dynamicBlockRounds > wizard.dynamicRounds)) return 'A duração do bloco deve ficar entre 1 e o total de rodadas.';
+  }
+  if (step === 3 && wizard.format === 'milton') {
+    const validGames = validMiltonGamesPerPlayer(wizard.entrants.length);
+    if (!validGames.includes(Number(wizard.miltonGamesPerPlayer))) return `Escolha uma quantidade válida de jogos por jogador: ${validGames.join(', ')}.`;
+    if (!Number.isInteger(wizard.qualifiers) || wizard.qualifiers < 2 || wizard.qualifiers > wizard.entrants.length) return `Os classificados precisam ficar entre 2 e ${wizard.entrants.length}.`;
+    if (wizard.bracketMode === 'complete' && !isPowerOfTwo(wizard.qualifiers)) return 'Na chave completa, escolha 2, 4, 8 ou 16 classificados.';
+    if (!['draw','seeded'].includes(wizard.knockoutPairing)) return 'Escolha sorteio livre ou melhor contra pior.';
+  }
+  if (step === 3 && wizard.format === 'fabio') {
+    const [, smaller] = fabioGroupSizes(wizard.entrants.length);
+    if (!Number.isInteger(wizard.fabioQualifiersPerGroup) || wizard.fabioQualifiersPerGroup < 1 || wizard.fabioQualifiersPerGroup > smaller) return `Os classificados por grupo precisam ficar entre 1 e ${smaller}.`;
+    wizard.qualifiers = wizard.fabioQualifiersPerGroup * 2;
+    if (wizard.bracketMode === 'complete' && !isPowerOfTwo(wizard.qualifiers)) return 'Use Chave adaptada ou escolha uma quantidade que gere 2, 4, 8 ou 16 classificados no total.';
+    if (!['draw','crossed'].includes(wizard.fabioGroupPairing)) return 'Escolha sorteio livre ou cruzamento entre grupos.';
   }
   if (step === 3 && wizard.format === 'mixed') {
     const total = wizard.mode === 'teams' ? wizard.teams.length : wizard.entrants.length;
@@ -1061,6 +1247,8 @@ function validateWizardStep(step) {
 function buildTournamentFromWizard() {
   const wizard = state.wizard;
   const profile = getGameProfile(wizard.gameProfile);
+  if (wizard.format === 'milton') wizard.mode = 'dynamic';
+  if (wizard.format === 'fabio') wizard.mode = 'individual';
   const participants = wizard.mode === 'teams'
     ? wizard.teams.map((team) => ({ id: uid(), name: team.name, imageUrl: '', players: team.members.map((member) => ({ id: uid(), name: member.name, imageUrl: '' })) }))
     : wizard.entrants.map((entrant) => {
@@ -1068,9 +1256,15 @@ function buildTournamentFromWizard() {
         return { id: participantId, name: entrant.name, imageUrl: '', players: [{ id: wizard.mode === 'dynamic' ? participantId : uid(), name: entrant.name, imageUrl: '' }] };
       });
 
+  const hybrid = isHybridFormat(wizard.format);
+  const qualifiers = wizard.format === 'fabio' ? wizard.fabioQualifiersPerGroup * 2 : (hybrid ? wizard.qualifiers : null);
+  const pairing = wizard.format === 'fabio'
+    ? (wizard.fabioGroupPairing === 'draw' ? 'draw' : 'crossed')
+    : (hybrid ? wizard.knockoutPairing : 'draw');
+
   const tournament = {
     id: uid(),
-    version: 12,
+    version: 13,
     coverImageUrl: '',
     themeColor: normalizeHexColor(wizard.themeColor, defaultThemeColor(profile.id)),
     name: wizard.name,
@@ -1084,18 +1278,22 @@ function buildTournamentFromWizard() {
       leagueLegs: wizard.leagueLegs,
       pointsWin: wizard.pointsWin,
       pointsDraw: profile.drawAllowed ? wizard.pointsDraw : 0,
-      qualifiers: wizard.format === 'mixed' ? wizard.qualifiers : null,
-      knockoutPairing: wizard.format === 'mixed' ? wizard.knockoutPairing : 'draw',
-      bracketMode: wizard.format === 'mixed' ? wizard.bracketMode : 'flexible',
+      qualifiers,
+      knockoutPairing: pairing,
+      bracketMode: hybrid ? wizard.bracketMode : 'flexible',
       thirdPlace: wizard.thirdPlace,
-      dynamicTeamSize: wizard.mode === 'dynamic' ? wizard.dynamicTeamSize : 2,
-      dynamicFormation: wizard.mode === 'dynamic' ? wizard.dynamicFormation : 'balanced',
-      dynamicRounds: wizard.mode === 'dynamic' ? wizard.dynamicRounds : 0,
+      dynamicTeamSize: wizard.format === 'milton' ? 2 : (wizard.mode === 'dynamic' ? wizard.dynamicTeamSize : 2),
+      dynamicFormation: wizard.format === 'milton' ? 'milton' : (wizard.mode === 'dynamic' ? wizard.dynamicFormation : 'balanced'),
+      dynamicRounds: wizard.format === 'milton' ? wizard.miltonGamesPerPlayer : (wizard.mode === 'dynamic' ? wizard.dynamicRounds : 0),
       dynamicBlockRounds: wizard.mode === 'dynamic' ? wizard.dynamicBlockRounds : 1,
+      miltonGamesPerPlayer: wizard.format === 'milton' ? wizard.miltonGamesPerPlayer : 0,
+      fabioQualifiersPerGroup: wizard.format === 'fabio' ? wizard.fabioQualifiersPerGroup : 0,
+      fabioGroupPairing: wizard.format === 'fabio' ? wizard.fabioGroupPairing : '',
+      groupAssignments: {},
       knockoutUnit: wizard.mode === 'dynamic' ? 'individual' : wizard.mode
     },
     matches: [],
-    knockoutState: { started: wizard.format === 'knockout', currentRound: 0, pendingByes: [], initialByes: [], pairing: wizard.format === 'mixed' ? wizard.knockoutPairing : 'draw', seeded: wizard.format === 'mixed' && wizard.knockoutPairing === 'seeded' },
+    knockoutState: { started: wizard.format === 'knockout', currentRound: 0, pendingByes: [], initialByes: [], pairing, seeded: pairing === 'seeded' || pairing === 'crossed' },
     championId: null,
     status: 'active',
     createdAt: now(),
@@ -1103,7 +1301,11 @@ function buildTournamentFromWizard() {
   };
 
   const ids = participants.map((item) => item.id);
-  if (wizard.format === 'league' || wizard.format === 'mixed') {
+  if (wizard.format === 'milton') {
+    tournament.matches = createMiltonLeague(tournament);
+  } else if (wizard.format === 'fabio') {
+    tournament.matches = createFabioGroupLeague(tournament);
+  } else if (wizard.format === 'league' || wizard.format === 'mixed') {
     tournament.matches = wizard.mode === 'dynamic'
       ? createDynamicTeamLeague(tournament)
       : createRoundRobin(shuffle(ids), wizard.leagueLegs, tournament);
@@ -1151,6 +1353,7 @@ function createMatch(tournament, data) {
     mvpPlayerId: '',
     notes: '',
     dynamicTeam: Boolean(data.dynamicTeam),
+    groupKey: data.groupKey || '',
     homeLabel: data.homeLabel || '',
     awayLabel: data.awayLabel || '',
     homeLineup: data.homeLineup || home?.players.map((player) => player.id) || [],
@@ -1380,6 +1583,139 @@ function chunk(values, size) {
   return groups.filter((group) => group.length === size);
 }
 
+
+function roundRobinPartnerRounds(ids) {
+  const rotation = shuffle(ids);
+  if (rotation.length % 2 !== 0) throw new Error('O Formato Milton exige número par de jogadores.');
+  const rounds = [];
+  for (let round = 0; round < rotation.length - 1; round += 1) {
+    const pairs = [];
+    for (let index = 0; index < rotation.length / 2; index += 1) {
+      pairs.push([rotation[index], rotation[rotation.length - 1 - index]]);
+    }
+    rounds.push(pairs);
+    rotation.splice(1, 0, rotation.pop());
+  }
+  return rounds;
+}
+
+function edgesAreDisjoint(a, b) {
+  return !a.some((id) => b.includes(id));
+}
+
+function pairDisjointEdges(edges) {
+  if (!edges.length) return [];
+  const first = edges[0];
+  for (let index = 1; index < edges.length; index += 1) {
+    if (!edgesAreDisjoint(first.edge, edges[index].edge)) continue;
+    const remaining = edges.slice(1, index).concat(edges.slice(index + 1));
+    const rest = pairDisjointEdges(remaining);
+    if (rest) return [[first, edges[index]], ...rest];
+  }
+  return null;
+}
+
+function createMiltonLeague(tournament) {
+  const playerIds = tournament.participants.map((participant) => participant.players?.[0]?.id || participant.id);
+  const gamesPerPlayer = Math.max(1, Number(tournament.settings.miltonGamesPerPlayer || tournament.settings.dynamicRounds || 1));
+  const plan = miltonPlan(playerIds.length, gamesPerPlayer);
+  if (!plan.valid) throw new Error('Configuração inválida do Formato Milton. O total de jogos precisa ser igual para todos.');
+
+  const allFactors = roundRobinPartnerRounds(playerIds);
+  const factors = shuffle(allFactors).slice(0, gamesPerPlayer).map((pairs, factorIndex) => ({ factorIndex, pairs: shuffle(pairs) }));
+  const oddFactors = factors.filter((factor) => factor.pairs.length % 2 === 1);
+  let leftoverSelection = [];
+  let leftoverPairs = [];
+
+  if (oddFactors.length) {
+    for (let attempt = 0; attempt < 1500 && !leftoverPairs.length; attempt += 1) {
+      const selected = oddFactors.map((factor) => ({
+        factorIndex: factor.factorIndex,
+        edge: factor.pairs[Math.floor(Math.random() * factor.pairs.length)]
+      }));
+      const paired = pairDisjointEdges(shuffle(selected));
+      if (paired) {
+        leftoverSelection = selected;
+        leftoverPairs = paired;
+      }
+    }
+    if (!leftoverPairs.length) throw new Error('Não foi possível montar as rodadas sem repetir duplas. Tente gerar novamente.');
+  }
+
+  const selectedKey = new Map(leftoverSelection.map((item) => [item.factorIndex, pairKey(item.edge[0], item.edge[1])]));
+  const matches = [];
+  let scheduleRound = 1;
+
+  factors.forEach((factor) => {
+    const leftoverKey = selectedKey.get(factor.factorIndex);
+    const regular = factor.pairs.filter((edge) => pairKey(edge[0], edge[1]) !== leftoverKey);
+    for (let index = 0; index < regular.length; index += 2) {
+      const homeLineup = regular[index];
+      const awayLineup = regular[index + 1];
+      matches.push(createMatch(tournament, {
+        stage: 'league',
+        round: scheduleRound,
+        roundName: `Rodada ${scheduleRound} · Formato Milton 2v2`,
+        dynamicTeam: true,
+        homeLineup,
+        awayLineup,
+        homeLabel: 'Dupla A',
+        awayLabel: 'Dupla B'
+      }));
+    }
+    scheduleRound += 1;
+  });
+
+  leftoverPairs.forEach(([home, away]) => {
+    matches.push(createMatch(tournament, {
+      stage: 'league',
+      round: scheduleRound,
+      roundName: `Rodada complementar ${scheduleRound - factors.length} · Formato Milton 2v2`,
+      dynamicTeam: true,
+      homeLineup: home.edge,
+      awayLineup: away.edge,
+      homeLabel: 'Dupla A',
+      awayLabel: 'Dupla B'
+    }));
+    scheduleRound += 1;
+  });
+
+  const appearances = new Map(playerIds.map((id) => [id, 0]));
+  const teammatePairs = new Set();
+  matches.forEach((match) => {
+    for (const lineup of [match.homeLineup, match.awayLineup]) {
+      lineup.forEach((id) => appearances.set(id, appearances.get(id) + 1));
+      const key = pairKey(lineup[0], lineup[1]);
+      if (teammatePairs.has(key)) throw new Error('O gerador repetiu uma dupla. Gere novamente.');
+      teammatePairs.add(key);
+    }
+  });
+  if ([...appearances.values()].some((value) => value !== gamesPerPlayer)) throw new Error('O calendário não ficou equilibrado. Gere novamente.');
+  return matches;
+}
+
+function createFabioGroupLeague(tournament) {
+  const ids = shuffle(tournament.participants.map((participant) => participant.id));
+  const split = Math.ceil(ids.length / 2);
+  const groupA = ids.slice(0, split);
+  const groupB = ids.slice(split);
+  tournament.settings.groupAssignments = Object.fromEntries([
+    ...groupA.map((id) => [id, 'A']),
+    ...groupB.map((id) => [id, 'B'])
+  ]);
+  const createGroup = (groupIds, groupKey) => createRoundRobin(groupIds, tournament.settings.leagueLegs, tournament).map((match) => ({
+    ...match,
+    groupKey,
+    roundName: `Grupo ${groupKey} · Rodada ${match.round}`
+  }));
+  return [...createGroup(groupA, 'A'), ...createGroup(groupB, 'B')].sort((a, b) => a.round - b.round || a.groupKey.localeCompare(b.groupKey));
+}
+
+function fabioGroupIds(tournament, groupKey) {
+  const assignments = tournament.settings?.groupAssignments || {};
+  return tournament.participants.filter((participant) => assignments[participant.id] === groupKey).map((participant) => participant.id);
+}
+
 function highestPowerOfTwoAtMost(value) {
   return 2 ** Math.floor(Math.log2(value));
 }
@@ -1437,7 +1773,7 @@ function interleaveByesAndWinners(byes, roundWinners) {
 
 function beginKnockout(tournament, orderedIds, pairingMode = 'draw') {
   const pairing = pairingMode === true ? 'seeded' : pairingMode === false ? 'draw' : pairingMode;
-  const seeded = pairing === 'seeded';
+  const seeded = pairing === 'seeded' || pairing === 'crossed';
   const ids = [...orderedIds];
   const n = ids.length;
   if (n < 2) throw new Error('O mata-mata precisa de pelo menos dois participantes.');
@@ -1472,10 +1808,15 @@ function knockoutMatches(tournament) {
   return tournament.matches.filter((match) => match.stage === 'knockout');
 }
 
-function standings(tournament) {
-  const rows = Object.fromEntries(tournament.participants.map((participant) => [participant.id, {
-    id: participant.id, pj: 0, v: 0, e: 0, d: 0, gp: 0, gc: 0, sg: 0, pts: 0
-  }]));
+function standings(tournament, groupKey = '') {
+  const participantIds = groupKey && tournament.format === 'fabio'
+    ? new Set(fabioGroupIds(tournament, groupKey))
+    : new Set(tournament.participants.map((participant) => participant.id));
+  const rows = Object.fromEntries(tournament.participants
+    .filter((participant) => participantIds.has(participant.id))
+    .map((participant) => [participant.id, {
+      id: participant.id, pj: 0, v: 0, e: 0, d: 0, gp: 0, gc: 0, sg: 0, pts: 0
+    }]));
 
   const applyResult = (row, ownScore, opponentScore, result) => {
     if (!row) return;
@@ -1494,6 +1835,7 @@ function standings(tournament) {
   };
 
   for (const match of leagueMatches(tournament)) {
+    if (groupKey && match.groupKey !== groupKey) continue;
     if (!match.played || !match.homeId || !match.awayId) continue;
     const homeScore = Number(match.homeScore || 0);
     const awayScore = Number(match.awayScore || 0);
@@ -1520,6 +1862,10 @@ function standings(tournament) {
   return Object.values(rows).sort((a, b) =>
     b.pts - a.pts || b.v - a.v || b.sg - a.sg || b.gp - a.gp || participantName(tournament, a.id).localeCompare(participantName(tournament, b.id))
   );
+}
+
+function fabioStandings(tournament) {
+  return { A: standings(tournament, 'A'), B: standings(tournament, 'B') };
 }
 
 function allLeagueMatchesPlayed(tournament) {
@@ -1561,7 +1907,7 @@ function advanceKnockout(tournament) {
   }
 
   const nextRound = round + 1;
-  const pairs = tournament.knockoutState.pairing === 'seeded' ? pairOuter(winners) : pairSequential(winners);
+  const pairs = ['seeded','crossed'].includes(tournament.knockoutState.pairing) ? pairOuter(winners) : pairSequential(winners);
   const nextName = knockoutRoundName(winners.length);
   tournament.matches.push(...pairs.map(([homeId, awayId]) => createMatch(tournament, {
     stage: 'knockout', round: nextRound, bracketRound: nextRound, roundName: nextName, homeId, awayId
@@ -1581,19 +1927,35 @@ function updateLeagueChampion(tournament) {
 }
 
 function generateMixedKnockout(tournament) {
-  if (tournament.format !== 'mixed') throw new Error('Este campeonato não possui fase mista.');
+  if (!isHybridFormat(tournament.format)) throw new Error('Este campeonato não possui fase classificatória seguida de mata-mata.');
   if (tournament.knockoutState.started) throw new Error('O mata-mata já foi gerado.');
-  if (!allLeagueMatchesPlayed(tournament)) throw new Error('Registre todos os jogos da liga antes de gerar o mata-mata.');
+  if (!allLeagueMatchesPlayed(tournament)) throw new Error('Registre todos os jogos da fase classificatória antes de gerar o mata-mata.');
+
+  if (tournament.format === 'fabio') {
+    const perGroup = Math.max(1, Number(tournament.settings.fabioQualifiersPerGroup || 1));
+    const groupA = standings(tournament, 'A').slice(0, perGroup).map((row) => row.id);
+    const groupB = standings(tournament, 'B').slice(0, perGroup).map((row) => row.id);
+    if (groupA.length !== perGroup || groupB.length !== perGroup) throw new Error('Os dois grupos precisam ter classificados suficientes.');
+    const pairing = tournament.settings.fabioGroupPairing || (tournament.settings.knockoutPairing === 'draw' ? 'draw' : 'crossed');
+    const crossedOrder = [];
+    for (let index = 0; index < perGroup; index += 1) crossedOrder.push(groupA[index], groupB[index]);
+    beginKnockout(tournament, pairing === 'draw' ? shuffle([...groupA, ...groupB]) : crossedOrder, pairing === 'draw' ? 'draw' : 'crossed');
+    return;
+  }
+
   const qualified = standings(tournament).slice(0, tournament.settings.qualifiers).map((row) => row.id);
   const pairing = tournament.settings.knockoutPairing || 'draw';
   beginKnockout(tournament, pairing === 'draw' ? shuffle(qualified) : qualified, pairing);
 }
 
 function rerollMixedKnockout(tournament) {
-  if (tournament.format !== 'mixed' || !tournament.knockoutState.started) throw new Error('O mata-mata ainda não foi gerado.');
+  if (!isHybridFormat(tournament.format) || !tournament.knockoutState.started) throw new Error('O mata-mata ainda não foi gerado.');
   if (knockoutMatches(tournament).some((match) => match.played)) throw new Error('Não é possível refazer a chave depois de registrar um resultado do mata-mata.');
   tournament.matches = tournament.matches.filter((match) => match.stage === 'league');
-  tournament.knockoutState = { started: false, currentRound: 0, pendingByes: [], initialByes: [], pairing: tournament.settings.knockoutPairing || 'draw', seeded: tournament.settings.knockoutPairing === 'seeded' };
+  const pairing = tournament.format === 'fabio'
+    ? (tournament.settings.fabioGroupPairing === 'draw' ? 'draw' : 'crossed')
+    : (tournament.settings.knockoutPairing || 'draw');
+  tournament.knockoutState = { started: false, currentRound: 0, pendingByes: [], initialByes: [], pairing, seeded: ['seeded','crossed'].includes(pairing) };
   tournament.championId = null;
   generateMixedKnockout(tournament);
 }
@@ -1601,11 +1963,18 @@ function rerollMixedKnockout(tournament) {
 function rerollTournament(tournament) {
   if (playedMatches(tournament) > 0) throw new Error('Não é possível sortear novamente depois de registrar resultados.');
   tournament.championId = null;
-  if (tournament.format === 'league' || tournament.format === 'mixed') {
-    tournament.matches = tournament.mode === 'dynamic'
-      ? createDynamicTeamLeague(tournament)
-      : createRoundRobin(shuffle(tournament.participants.map((item) => item.id)), tournament.settings.leagueLegs, tournament);
-    tournament.knockoutState = { started: false, currentRound: 0, pendingByes: [], initialByes: [], pairing: tournament.settings.knockoutPairing || 'draw', seeded: tournament.settings.knockoutPairing === 'seeded' };
+  if (hasLeagueFormat(tournament.format)) {
+    tournament.matches = tournament.format === 'milton'
+      ? createMiltonLeague(tournament)
+      : tournament.format === 'fabio'
+        ? createFabioGroupLeague(tournament)
+        : tournament.mode === 'dynamic'
+          ? createDynamicTeamLeague(tournament)
+          : createRoundRobin(shuffle(tournament.participants.map((item) => item.id)), tournament.settings.leagueLegs, tournament);
+    const pairing = tournament.format === 'fabio'
+      ? (tournament.settings.fabioGroupPairing === 'draw' ? 'draw' : 'crossed')
+      : (tournament.settings.knockoutPairing || 'draw');
+    tournament.knockoutState = { started: false, currentRound: 0, pendingByes: [], initialByes: [], pairing, seeded: ['seeded','crossed'].includes(pairing) };
   } else {
     tournament.matches = [];
     beginKnockout(tournament, shuffle(tournament.participants.map((item) => item.id)), 'draw');
@@ -1641,7 +2010,7 @@ function renderTournamentDetail() {
           <button class="button secondary" data-edit-tournament>Editar campeonato</button>
           <button class="button secondary" data-edit-participants>Editar jogadores</button>
           ${playedMatches(tournament) === 0 ? '<button class="button ghost" data-reroll>Sortear novamente</button>' : ''}
-          ${tournament.format === 'mixed' && tournament.knockoutState.started && !knockoutMatches(tournament).some((match) => match.played) && tournament.settings.knockoutPairing === 'draw' ? '<button class="button ghost" data-reroll-knockout>Refazer sorteio do mata-mata</button>' : ''}
+          ${isHybridFormat(tournament.format) && tournament.knockoutState.started && !knockoutMatches(tournament).some((match) => match.played) && tournament.settings.knockoutPairing === 'draw' ? '<button class="button ghost" data-reroll-knockout>Refazer sorteio do mata-mata</button>' : ''}
           <button class="button danger" data-delete-tournament>Excluir</button>
         </div>
       </section>
@@ -1649,8 +2018,8 @@ function renderTournamentDetail() {
       <div class="detail-grid">
         <aside class="panel detail-menu">
           ${detailTabButton('overview','Painel')}
-          ${tournament.format !== 'knockout' ? detailTabButton('standings','Classificação') : ''}
-          ${tournament.format !== 'league' ? detailTabButton('bracket','Mata-mata') : ''}
+          ${hasLeagueFormat(tournament.format) ? detailTabButton('standings','Classificação') : ''}
+          ${hasKnockoutFormat(tournament.format) ? detailTabButton('bracket','Mata-mata') : ''}
           ${detailTabButton('players','Jogadores')}
           ${detailTabButton('statistics','Estatísticas')}
           ${detailTabButton('settings','Configuração')}
@@ -1707,22 +2076,32 @@ function focusMatchForTournament(tournament) {
   return playable.find((match) => !match.played) || [...playable].reverse().find((match) => match.played) || playable[0] || null;
 }
 
-function compactStandingsHtml(tournament, limit = 8) {
-  const rows = standings(tournament).slice(0, limit);
-  const qualifiers = tournament.format === 'mixed' ? Number(tournament.settings.qualifiers || 0) : 0;
-  if (!rows.length) return '<div class="overview-empty">A classificação aparecerá após os primeiros jogos.</div>';
-  return `<div class="compact-standings">${rows.map((row, index) => `<div class="compact-standing-row ${qualifiers && index < qualifiers ? 'qualified' : ''}">
+function compactStandingsRowsHtml(tournament, rows, qualifiers = 0) {
+  return rows.map((row, index) => `<div class="compact-standing-row ${qualifiers && index < qualifiers ? 'qualified' : ''}">
     <span class="compact-rank">${index + 1}</span>
     ${avatarHtml(participantName(tournament,row.id), imageUrlForParticipant(tournament,row.id), 'tiny')}
     <strong>${escapeHtml(participantName(tournament,row.id))}</strong>
     <span>${row.pts} pts</span>
-  </div>`).join('')}</div>`;
+  </div>`).join('');
 }
+
+function compactStandingsHtml(tournament, limit = 8) {
+  if (tournament.format === 'fabio') {
+    const perGroup = Number(tournament.settings.fabioQualifiersPerGroup || 1);
+    const groups = fabioStandings(tournament);
+    return `<div class="compact-fabio-groups"><section><header>GRUPO A</header>${compactStandingsRowsHtml(tournament,groups.A.slice(0,limit),perGroup)}</section><section><header>GRUPO B</header>${compactStandingsRowsHtml(tournament,groups.B.slice(0,limit),perGroup)}</section></div>`;
+  }
+  const rows = standings(tournament).slice(0, limit);
+  const qualifiers = isHybridFormat(tournament.format) ? Number(tournament.settings.qualifiers || 0) : 0;
+  if (!rows.length) return '<div class="overview-empty">A classificação aparecerá após os primeiros jogos.</div>';
+  return `<div class="compact-standings">${compactStandingsRowsHtml(tournament,rows,qualifiers)}</div>`;
+}
+
 
 function compactBracketContextHtml(tournament) {
   const matches = knockoutMatches(tournament);
   if (!matches.length) {
-    const qualifiers = tournament.format === 'mixed' ? tournament.settings.qualifiers : tournament.participants.length;
+    const qualifiers = isHybridFormat(tournament.format) ? tournament.settings.qualifiers : tournament.participants.length;
     return `<div class="overview-empty">A chave completa está projetada para ${qualifiers} classificados. Gere o mata-mata quando a liga terminar.</div>`;
   }
   const round = currentKnockoutRound(tournament) || 1;
@@ -1752,7 +2131,7 @@ function spotlightMatchHtml(tournament, match) {
 
 function overviewTabHtml(tournament) {
   const focus = focusMatchForTournament(tournament);
-  const leagueContext = tournament.format !== 'knockout' && !(tournament.format === 'mixed' && tournament.knockoutState?.started);
+  const leagueContext = hasLeagueFormat(tournament.format) && !(isHybridFormat(tournament.format) && tournament.knockoutState?.started);
   const recent = tournament.matches.filter((match) => !match.isBye && match.homeId && match.awayId).slice(0, 6);
   return `<div class="overview-dashboard">
     <section class="overview-main-grid">
@@ -1780,9 +2159,9 @@ function overviewTabHtml(tournament) {
 
 function matchesTabHtml(tournament) {
   const groups = groupMatchesForDisplay(tournament.matches);
-  const leagueDone = tournament.format === 'mixed' && allLeagueMatchesPlayed(tournament) && !tournament.knockoutState.started;
+  const leagueDone = isHybridFormat(tournament.format) && allLeagueMatchesPlayed(tournament) && !tournament.knockoutState.started;
   return `<div class="stack">
-    ${tournament.format === 'mixed' && !tournament.knockoutState.started ? `<div class="notice ${leagueDone ? 'success' : 'info'}">${leagueDone ? `Liga concluída. Os ${tournament.settings.qualifiers} primeiros estão prontos para o mata-mata por ${tournament.settings.knockoutPairing === 'seeded' ? 'melhor contra pior' : 'sorteio livre'}.` : `Fase classificatória em andamento. Os ${tournament.settings.qualifiers} primeiros avançam.`}${leagueDone ? ' <button class="button small primary" data-generate-knockout style="margin-left:10px">Gerar mata-mata</button>' : ''}</div>` : ''}
+    ${isHybridFormat(tournament.format) && !tournament.knockoutState.started ? `<div class="notice ${leagueDone ? 'success' : 'info'}">${leagueDone ? `Liga concluída. Os ${tournament.settings.qualifiers} primeiros estão prontos para o mata-mata por ${tournament.settings.knockoutPairing === 'seeded' ? 'melhor contra pior' : 'sorteio livre'}.` : `Fase classificatória em andamento. Os ${tournament.settings.qualifiers} primeiros avançam.`}${leagueDone ? ' <button class="button small primary" data-generate-knockout style="margin-left:10px">Gerar mata-mata</button>' : ''}</div>` : ''}
     ${groups.map(({ key, label, matches }) => `<section class="round-section"><div class="round-head"><strong>${escapeHtml(label)}</strong><span>${matches.filter((match) => match.played).length}/${matches.length} registrados</span></div>${matches.map((match,index) => matchRowHtml(tournament,match,index)).join('')}</section>`).join('') || '<div class="notice">Nenhum jogo criado.</div>'}
   </div>`;
 }
@@ -1819,11 +2198,36 @@ function matchRowHtml(tournament, match, index) {
   </div>`;
 }
 
-function standingsTabHtml(tournament) {
-  const rows = standings(tournament);
-  const qualifiers = tournament.format === 'mixed' ? tournament.settings.qualifiers : 0;
+function standingsTableRowsHtml(tournament, rows, qualifiers = 0) {
+  return rows.map((row,index) => `<tr class="${qualifiers && index < qualifiers ? 'qualified' : ''} ${qualifiers && index === qualifiers - 1 ? 'cut-line' : ''}">
+    <td class="rank"><span>${index + 1}</span></td>
+    <td><span class="table-player-identity">${avatarHtml(participantName(tournament,row.id),imageUrlForParticipant(tournament,row.id),'tiny')}<strong>${escapeHtml(participantName(tournament,row.id))}</strong></span></td>
+    <td class="num">${row.pj}</td><td class="num win-cell">${row.v}</td><td class="num">${row.e}</td><td class="num loss-cell">${row.d}</td><td class="num">${row.gp}</td><td class="num">${row.gc}</td><td class="num">${row.sg}</td><td class="num points-cell"><strong>${row.pts}</strong></td>
+  </tr>`).join('');
+}
+
+function standingsTablePanelHtml(tournament, title, rows, qualifiers, description = '') {
   const profile = getGameProfile(tournament);
-  return `<div class="panel standings-panel ${gameProfileClass(tournament)}" style="${themeStyle(tournament)}"><div class="panel-head standings-title"><div><span class="panel-kicker">TABELA DA COMPETIÇÃO</span><h3>Classificação</h3><p>${tournament.mode === 'dynamic' ? `Classificação individual: cada integrante recebe o resultado da equipe temporária.${tournament.format === 'mixed' ? ` Os ${qualifiers} primeiros avançam ao 1v1.` : ''}` : tournament.format === 'mixed' ? `Os ${qualifiers} primeiros avançam ao mata-mata.` : 'Tabela completa da liga.'}</p></div><div class="legend"><span class="legend-qualified"></span> Zona de classificação</div></div><div class="table-wrap"><table class="stats-table standings-table"><thead><tr><th>#</th><th>Participante</th><th class="num">J</th><th class="num">V</th><th class="num">E</th><th class="num">D</th><th class="num">${profile.scoreShort}+</th><th class="num">${profile.scoreShort}-</th><th class="num">SALDO</th><th class="num">PTS</th></tr></thead><tbody>${rows.map((row,index) => `<tr class="${qualifiers && index < qualifiers ? 'qualified' : ''} ${qualifiers && index === qualifiers - 1 ? 'cut-line' : ''}"><td class="rank"><span>${index + 1}</span></td><td><strong>${escapeHtml(participantName(tournament,row.id))}</strong></td><td class="num">${row.pj}</td><td class="num win-cell">${row.v}</td><td class="num">${row.e}</td><td class="num loss-cell">${row.d}</td><td class="num">${row.gp}</td><td class="num">${row.gc}</td><td class="num">${row.sg}</td><td class="num points-cell"><strong>${row.pts}</strong></td></tr>`).join('')}</tbody></table></div></div>`;
+  return `<div class="panel standings-panel ${gameProfileClass(tournament)}" style="${themeStyle(tournament)}"><div class="panel-head standings-title"><div><span class="panel-kicker">TABELA DA COMPETIÇÃO</span><h3>${escapeHtml(title)}</h3><p>${escapeHtml(description)}</p></div><div class="legend"><span class="legend-qualified"></span> Zona de classificação</div></div><div class="table-wrap"><table class="stats-table standings-table"><thead><tr><th>#</th><th>Participante</th><th class="num">J</th><th class="num">V</th><th class="num">E</th><th class="num">D</th><th class="num">${profile.scoreShort}+</th><th class="num">${profile.scoreShort}-</th><th class="num">SALDO</th><th class="num">PTS</th></tr></thead><tbody>${standingsTableRowsHtml(tournament,rows,qualifiers)}</tbody></table></div></div>`;
+}
+
+function standingsTabHtml(tournament) {
+  if (tournament.format === 'fabio') {
+    const groups = fabioStandings(tournament);
+    const qualifiers = Number(tournament.settings.fabioQualifiersPerGroup || 1);
+    return `<div class="fabio-standings-grid">
+      ${standingsTablePanelHtml(tournament,'Grupo A',groups.A,qualifiers,`Os ${qualifiers} primeiros avançam ao mata-mata.`)}
+      ${standingsTablePanelHtml(tournament,'Grupo B',groups.B,qualifiers,`Os ${qualifiers} primeiros avançam ao mata-mata.`)}
+    </div>`;
+  }
+  const rows = standings(tournament);
+  const qualifiers = isHybridFormat(tournament.format) ? tournament.settings.qualifiers : 0;
+  const description = tournament.format === 'milton'
+    ? `Classificação individual da liga 2v2. Os ${qualifiers} primeiros avançam ao mata-mata 1v1.`
+    : tournament.mode === 'dynamic'
+      ? `Classificação individual: cada integrante recebe o resultado da equipe temporária.${isHybridFormat(tournament.format) ? ` Os ${qualifiers} primeiros avançam ao 1v1.` : ''}`
+      : isHybridFormat(tournament.format) ? `Os ${qualifiers} primeiros avançam ao mata-mata.` : 'Tabela completa da liga.';
+  return standingsTablePanelHtml(tournament,'Classificação',rows,qualifiers,description);
 }
 
 
@@ -1882,13 +2286,13 @@ function createBracketDisplayNode(tournament, round, index, title, intendedHome,
 }
 
 function bracketDisplayModel(tournament) {
-  const total = tournament.format === 'mixed'
+  const total = isHybridFormat(tournament.format)
     ? Number(tournament.settings.qualifiers || 0)
     : tournament.participants.length;
   const plan = getBracketPlan(total);
   const started = Boolean(tournament.knockoutState?.started);
   const pairing = tournament.knockoutState?.pairing || tournament.settings.knockoutPairing || 'draw';
-  const seeded = pairing === 'seeded';
+  const seeded = pairing === 'seeded' || pairing === 'crossed';
   const actualByRound = new Map();
   for (const match of knockoutMatches(tournament)) {
     const round = Number(match.bracketRound || 1);
@@ -2181,7 +2585,7 @@ function bracketTabHtml(tournament) {
   const model = bracketDisplayModel(tournament);
   const pairingLabel = model.seeded ? 'Melhor contra pior' : 'Sorteio livre';
   const initialByes = tournament.knockoutState?.initialByes || [];
-  const isPreview = tournament.format === 'mixed' && !tournament.knockoutState.started;
+  const isPreview = isHybridFormat(tournament.format) && !tournament.knockoutState.started;
   const canGenerate = isPreview && allLeagueMatchesPlayed(tournament);
 
   return `<div class="stack bracket-tab">
@@ -2341,7 +2745,9 @@ function tournamentRosterEntries(tournament) {
         participantId: participant.id,
         name: player.name || participant.name || 'Jogador',
         imageUrl: player.imageUrl || participant.imageUrl || '',
-        team: tournament.mode === 'teams' ? participant.name : '',
+        team: tournament.format === 'fabio'
+          ? `Grupo ${tournament.settings?.groupAssignments?.[participant.id] || '?'}`
+          : (tournament.mode === 'teams' ? participant.name : ''),
         number: entries.length + 1,
         pj: Number(stats.pj || 0),
         wins: Number(stats.v || 0),
@@ -2440,9 +2846,21 @@ function recordCard(label,value,sub,icon) {
 
 function settingsTabHtml(tournament) {
   const profile = getGameProfile(tournament);
+  const specialRows = tournament.format === 'milton'
+    ? `<tr><td>Fase classificatória</td><td class="num"><strong>2v2 com duplas rotativas</strong></td></tr>
+       <tr><td>Jogos por jogador</td><td class="num">${tournament.settings.miltonGamesPerPlayer}</td></tr>
+       <tr><td>Repetição de dupla</td><td class="num"><strong>Não permitida</strong></td></tr>
+       <tr><td>Classificação</td><td class="num">Individual</td></tr>
+       <tr><td>Fase final</td><td class="num"><strong>1v1</strong></td></tr>`
+    : tournament.format === 'fabio'
+      ? `<tr><td>Fase classificatória</td><td class="num"><strong>2 grupos</strong></td></tr>
+         <tr><td>Classificados por grupo</td><td class="num">${tournament.settings.fabioQualifiersPerGroup}</td></tr>
+         <tr><td>Cruzamento</td><td class="num">${tournament.settings.fabioGroupPairing === 'draw' ? 'Sorteio livre' : 'Grupo A × Grupo B'}</td></tr>
+         <tr><td>Turnos por grupo</td><td class="num">${tournament.settings.leagueLegs}</td></tr>`
+      : '';
   return `<div class="stack">
     <div class="settings-actions-grid">
-      <button class="settings-action-card" data-edit-tournament><span>01</span><div><strong>Editar campeonato</strong><small>Nome, capa e perfil do jogo.</small></div></button>
+      <button class="settings-action-card" data-edit-tournament><span>01</span><div><strong>Editar campeonato</strong><small>Nome, capa, tema e perfil do jogo.</small></div></button>
       <button class="settings-action-card" data-edit-participants><span>02</span><div><strong>Editar jogadores</strong><small>Nomes e fotos dos participantes.</small></div></button>
       <button class="settings-action-card danger" data-reconfigure><span>03</span><div><strong>Reconfigurar estrutura</strong><small>Recria confrontos e apaga resultados.</small></div></button>
     </div>
@@ -2455,17 +2873,18 @@ function settingsTabHtml(tournament) {
       <tr><td>Formato</td><td class="num"><strong>${formatLabel(tournament.format)}</strong></td></tr>
       <tr><td>Modo</td><td class="num">${modeLabel(tournament.mode)}</td></tr>
       <tr><td>Participantes</td><td class="num">${tournament.participants.length}</td></tr>
-      ${tournament.format !== 'knockout' ? tournament.mode === 'dynamic'
+      ${specialRows || (hasLeagueFormat(tournament.format) ? (tournament.mode === 'dynamic'
         ? `<tr><td>Formato das equipes</td><td class="num"><strong>${tournament.settings.dynamicTeamSize}v${tournament.settings.dynamicTeamSize}</strong></td></tr>
            <tr><td>Formação</td><td class="num">${tournament.settings.dynamicFormation === 'balanced' ? 'Rotação equilibrada' : tournament.settings.dynamicFormation === 'random' ? 'Sorteio em cada rodada' : `Blocos de ${tournament.settings.dynamicBlockRounds} rodada(s)`}</td></tr>
            <tr><td>Rodadas da liga</td><td class="num">${tournament.settings.dynamicRounds}</td></tr>
-           <tr><td>Unidade da classificação</td><td class="num"><strong>Jogador individual</strong></td></tr>
-           <tr><td>Pontos por vitória</td><td class="num">${tournament.settings.pointsWin}</td></tr><tr><td>Pontos por empate</td><td class="num">${tournament.settings.pointsDraw}</td></tr>`
-        : `<tr><td>Turnos da liga</td><td class="num">${tournament.settings.leagueLegs}</td></tr><tr><td>Pontos por vitória</td><td class="num">${tournament.settings.pointsWin}</td></tr><tr><td>Pontos por empate</td><td class="num">${tournament.settings.pointsDraw}</td></tr>` : ''}
-      ${tournament.format === 'mixed' ? `<tr><td>Classificados</td><td class="num">${tournament.settings.qualifiers}</td></tr><tr><td>Cruzamento do mata-mata</td><td class="num">${tournament.settings.knockoutPairing === 'seeded' ? 'Melhor contra pior' : 'Sorteio livre'}</td></tr><tr><td>Estrutura da chave</td><td class="num">${tournament.settings.bracketMode === 'complete' ? 'Completa, sem folgas' : 'Adaptada'}</td></tr>${tournament.mode === 'dynamic' ? '<tr><td>Formato da fase final</td><td class="num"><strong>Individual (1v1)</strong></td></tr>' : ''}` : ''}
+           <tr><td>Unidade da classificação</td><td class="num"><strong>Jogador individual</strong></td></tr>`
+        : `<tr><td>Turnos da liga</td><td class="num">${tournament.settings.leagueLegs}</td></tr>`) : '')}
+      ${hasLeagueFormat(tournament.format) ? `<tr><td>Pontos por vitória</td><td class="num">${tournament.settings.pointsWin}</td></tr><tr><td>Pontos por empate</td><td class="num">${tournament.settings.pointsDraw}</td></tr>` : ''}
+      ${isHybridFormat(tournament.format) ? `<tr><td>Classificados</td><td class="num">${tournament.settings.qualifiers}</td></tr><tr><td>Estrutura da chave</td><td class="num">${tournament.settings.bracketMode === 'complete' ? 'Completa, sem folgas' : 'Adaptada'}</td></tr>` : ''}
     </tbody></table></div></div>
   </div>`;
 }
+
 
 function matchGameFieldsHtml(tournament, match, home, away, knockout) {
   const profile = getGameProfile(tournament);
@@ -2614,7 +3033,7 @@ function openMatchModal(tournamentId, matchId) {
   $$('[data-close]').forEach((button) => button.addEventListener('click', closeModal));
   $('[data-clear-result]')?.addEventListener('click', async () => {
     if (!confirm('Limpar este resultado? Fases posteriores do mata-mata também poderão ser removidas.')) return;
-    if (match.stage === 'league' && tournament.format === 'mixed' && tournament.knockoutState.started) resetMixedKnockout(tournament);
+    if (match.stage === 'league' && isHybridFormat(tournament.format) && tournament.knockoutState.started) resetMixedKnockout(tournament);
     clearMatchResult(tournament, match);
     try { await persistTournament(tournament); closeModal(); renderTournamentDetail(); toast('Resultado removido.', 'success'); }
     catch (error) { toast(error.message, 'error'); }
@@ -2633,7 +3052,7 @@ function openMatchModal(tournamentId, matchId) {
       if (!winnerId) return toast('Selecione o vencedor da partida.', 'error');
     }
 
-    if (match.stage === 'league' && tournament.format === 'mixed' && tournament.knockoutState.started) {
+    if (match.stage === 'league' && isHybridFormat(tournament.format) && tournament.knockoutState.started) {
       if (!confirm('Alterar a fase de liga removerá o mata-mata já gerado. Continuar?')) return;
       resetMixedKnockout(tournament);
     }
@@ -2705,7 +3124,10 @@ function truncateKnockoutAfter(tournament, round) {
 
 function resetMixedKnockout(tournament) {
   tournament.matches = tournament.matches.filter((match) => match.stage === 'league');
-  tournament.knockoutState = { started: false, currentRound: 0, pendingByes: [], initialByes: [], pairing: tournament.settings.knockoutPairing || 'draw', seeded: tournament.settings.knockoutPairing === 'seeded' };
+  const pairing = tournament.format === 'fabio'
+    ? (tournament.settings.fabioGroupPairing === 'draw' ? 'draw' : 'crossed')
+    : (tournament.settings.knockoutPairing || 'draw');
+  tournament.knockoutState = { started: false, currentRound: 0, pendingByes: [], initialByes: [], pairing, seeded: ['seeded','crossed'].includes(pairing) };
   tournament.championId = null;
 }
 
@@ -2799,7 +3221,7 @@ function centerMatchListHtml(tournament, selectedId) {
 }
 
 function gamesCenterContextHtml(tournament) {
-  const showLeague = tournament.format !== 'knockout' && !(tournament.format === 'mixed' && tournament.knockoutState?.started);
+  const showLeague = hasLeagueFormat(tournament.format) && !(isHybridFormat(tournament.format) && tournament.knockoutState?.started);
   return `<section class="games-context-panel">
     <div class="games-context-head"><span>${showLeague ? 'CLASSIFICAÇÃO' : 'MATA-MATA'}</span><h3>${showLeague ? 'Tabela ao vivo' : 'Chave do torneio'}</h3></div>
     ${showLeague ? compactStandingsHtml(tournament, 12) : compactBracketContextHtml(tournament)}
@@ -2862,7 +3284,7 @@ function openGamesCenter(tournamentId, requestedMatchId = '') {
   }
   $('[data-center-clear]')?.addEventListener('click', async () => {
     if (!confirm('Limpar este resultado? Fases posteriores do mata-mata também poderão ser removidas.')) return;
-    if (selected.stage === 'league' && tournament.format === 'mixed' && tournament.knockoutState.started) resetMixedKnockout(tournament);
+    if (selected.stage === 'league' && isHybridFormat(tournament.format) && tournament.knockoutState.started) resetMixedKnockout(tournament);
     clearMatchResult(tournament, selected);
     try { await persistTournament(tournament); openGamesCenter(tournament.id, selected.id); toast('Resultado removido.', 'success'); }
     catch (error) { toast(error.message, 'error'); }
@@ -2895,7 +3317,7 @@ async function saveMatchFromForm(tournament, match) {
     winnerId = $('#manualWinner')?.value || null;
     if (!winnerId) throw new Error('Selecione o vencedor da partida.');
   }
-  if (match.stage === 'league' && tournament.format === 'mixed' && tournament.knockoutState.started) {
+  if (match.stage === 'league' && isHybridFormat(tournament.format) && tournament.knockoutState.started) {
     if (!confirm('Alterar a fase de liga removerá o mata-mata já gerado. Continuar?')) throw new Error('Alteração cancelada.');
     resetMixedKnockout(tournament);
   }
@@ -3057,10 +3479,20 @@ function openStructureEditModal(tournamentId) {
   const tournament = tournamentById(tournamentId);
   if (!tournament) return;
   const max = tournament.participants.length;
+  const validMilton = validMiltonGamesPerPlayer(max);
+  const [, smallerGroup] = fabioGroupSizes(max);
   openModal(`<div class="modal-head"><div><div class="eyebrow">RECONFIGURAR CAMPEONATO</div><h2>Recriar estrutura</h2></div><button class="icon-button" data-close>×</button></div>
     <form id="structureEditForm"><div class="modal-body stack"><div class="notice danger"><strong>Atenção:</strong> esta ação apaga todos os resultados, estatísticas, chave e campeão, mantendo os jogadores e as imagens.</div>
-      <div class="grid cols-2"><label class="field"><span>Formato</span><select id="structureFormat"><option value="league" ${tournament.format === 'league' ? 'selected' : ''}>Liga</option><option value="knockout" ${tournament.format === 'knockout' ? 'selected' : ''}>Mata-mata</option><option value="mixed" ${tournament.format === 'mixed' ? 'selected' : ''}>Liga + mata-mata</option></select></label><label class="field"><span>Turnos da liga</span><select id="structureLegs"><option value="1" ${tournament.settings.leagueLegs === 1 ? 'selected' : ''}>Turno único</option><option value="2" ${tournament.settings.leagueLegs === 2 ? 'selected' : ''}>Ida e volta</option></select></label></div>
-      <div class="grid cols-2"><label class="field"><span>Classificados ao mata-mata</span><input id="structureQualifiers" type="number" min="2" max="${max}" value="${Math.min(max, Number(tournament.settings.qualifiers || Math.min(8,max)))}"></label><label class="field"><span>Cruzamento</span><select id="structurePairing"><option value="seeded" ${tournament.settings.knockoutPairing === 'seeded' ? 'selected' : ''}>Melhor contra pior</option><option value="draw" ${tournament.settings.knockoutPairing === 'draw' ? 'selected' : ''}>Sorteio livre</option></select></label></div>
+      <div class="grid cols-2"><label class="field"><span>Formato</span><select id="structureFormat">
+        <option value="league" ${tournament.format === 'league' ? 'selected' : ''}>Liga</option>
+        <option value="knockout" ${tournament.format === 'knockout' ? 'selected' : ''}>Mata-mata</option>
+        <option value="mixed" ${tournament.format === 'mixed' ? 'selected' : ''}>Liga + mata-mata</option>
+        <option value="milton" ${tournament.format === 'milton' ? 'selected' : ''}>Formato Milton</option>
+        <option value="fabio" ${tournament.format === 'fabio' ? 'selected' : ''}>Liga Fábio</option>
+      </select></label><label class="field"><span>Turnos da liga/grupos</span><select id="structureLegs"><option value="1" ${tournament.settings.leagueLegs === 1 ? 'selected' : ''}>Turno único</option><option value="2" ${tournament.settings.leagueLegs === 2 ? 'selected' : ''}>Ida e volta</option></select></label></div>
+      <div class="grid cols-2"><label class="field"><span>Classificados ao mata-mata</span><input id="structureQualifiers" type="number" min="2" max="${max}" value="${Math.min(max, Number(tournament.settings.qualifiers || Math.min(8,max)))}"></label><label class="field"><span>Cruzamento padrão</span><select id="structurePairing"><option value="seeded" ${tournament.settings.knockoutPairing === 'seeded' ? 'selected' : ''}>Melhor contra pior</option><option value="draw" ${tournament.settings.knockoutPairing === 'draw' ? 'selected' : ''}>Sorteio livre</option></select></label></div>
+      <div class="grid cols-2"><label class="field"><span>Formato Milton · jogos por jogador</span><select id="structureMiltonGames">${validMilton.map((value)=>`<option value="${value}" ${Number(tournament.settings.miltonGamesPerPlayer)===value?'selected':''}>${value} jogos</option>`).join('')}</select></label><label class="field"><span>Liga Fábio · classificados por grupo</span><input id="structureFabioQualifiers" type="number" min="1" max="${Math.max(1,smallerGroup)}" value="${Math.min(Math.max(1,smallerGroup),Number(tournament.settings.fabioQualifiersPerGroup || Math.min(4,smallerGroup)))}"></label></div>
+      <label class="field"><span>Liga Fábio · entrada no mata-mata</span><select id="structureFabioPairing"><option value="crossed" ${tournament.settings.fabioGroupPairing !== 'draw' ? 'selected' : ''}>Cruzamento entre grupos</option><option value="draw" ${tournament.settings.fabioGroupPairing === 'draw' ? 'selected' : ''}>Sorteio livre</option></select></label>
       <label class="check-row"><input id="structureThird" type="checkbox" ${tournament.settings.thirdPlace ? 'checked' : ''}> Criar disputa de terceiro lugar</label>
     </div><div class="modal-foot"><button type="button" class="button ghost" data-close>Cancelar</button><button class="button danger" type="submit">Apagar resultados e recriar</button></div></form>`, 'wide');
   $$('[data-close]').forEach((button) => button.addEventListener('click', closeModal));
@@ -3069,18 +3501,42 @@ function openStructureEditModal(tournamentId) {
     if (!confirm('Confirma a exclusão de todos os resultados para recriar o campeonato?')) return;
     try {
       const format = $('#structureFormat').value;
-      const qualifiers = Number($('#structureQualifiers').value);
+      let qualifiers = Number($('#structureQualifiers').value);
+      const miltonGames = Number($('#structureMiltonGames').value);
+      const fabioPerGroup = Number($('#structureFabioQualifiers').value);
+      if (format === 'milton') {
+        if (max < 4 || max % 2 !== 0) throw new Error('O Formato Milton exige número par de jogadores e pelo menos quatro participantes.');
+        if (!validMilton.includes(miltonGames)) throw new Error('Escolha uma quantidade válida de jogos por jogador.');
+        if (qualifiers < 2 || qualifiers > max) throw new Error(`Os classificados precisam ficar entre 2 e ${max}.`);
+        tournament.mode = 'dynamic';
+      } else if (format === 'fabio') {
+        if (max < 4) throw new Error('A Liga Fábio exige pelo menos quatro jogadores.');
+        if (fabioPerGroup < 1 || fabioPerGroup > smallerGroup) throw new Error(`Os classificados por grupo precisam ficar entre 1 e ${smallerGroup}.`);
+        qualifiers = fabioPerGroup * 2;
+        tournament.mode = 'individual';
+      } else if (format === 'knockout' && tournament.mode === 'dynamic') {
+        tournament.mode = 'individual';
+      }
       if (format === 'mixed' && (qualifiers < 2 || qualifiers > max)) throw new Error(`Os classificados precisam ficar entre 2 e ${max}.`);
       tournament.format = format;
       tournament.settings.leagueLegs = Number($('#structureLegs').value);
-      tournament.settings.qualifiers = format === 'mixed' ? qualifiers : null;
-      tournament.settings.knockoutPairing = $('#structurePairing').value;
+      tournament.settings.qualifiers = isHybridFormat(format) ? qualifiers : null;
+      tournament.settings.knockoutPairing = format === 'fabio' ? ($('#structureFabioPairing').value === 'draw' ? 'draw' : 'crossed') : $('#structurePairing').value;
+      tournament.settings.fabioGroupPairing = $('#structureFabioPairing').value;
+      tournament.settings.fabioQualifiersPerGroup = fabioPerGroup;
+      tournament.settings.miltonGamesPerPlayer = miltonGames;
+      tournament.settings.dynamicTeamSize = format === 'milton' ? 2 : tournament.settings.dynamicTeamSize;
+      tournament.settings.dynamicFormation = format === 'milton' ? 'milton' : tournament.settings.dynamicFormation;
+      tournament.settings.dynamicRounds = format === 'milton' ? miltonGames : tournament.settings.dynamicRounds;
       tournament.settings.thirdPlace = $('#structureThird').checked;
       tournament.matches = [];
       tournament.championId = null;
-      tournament.knockoutState = { started: format === 'knockout', currentRound: 0, pendingByes: [], initialByes: [], pairing: tournament.settings.knockoutPairing, seeded: tournament.settings.knockoutPairing === 'seeded' };
+      const pairing = tournament.settings.knockoutPairing || 'draw';
+      tournament.knockoutState = { started: format === 'knockout', currentRound: 0, pendingByes: [], initialByes: [], pairing, seeded: ['seeded','crossed'].includes(pairing) };
       const ids = tournament.participants.map((item) => item.id);
-      if (format === 'league' || format === 'mixed') tournament.matches = tournament.mode === 'dynamic' ? createDynamicTeamLeague(tournament) : createRoundRobin(shuffle(ids), tournament.settings.leagueLegs, tournament);
+      if (format === 'milton') tournament.matches = createMiltonLeague(tournament);
+      else if (format === 'fabio') tournament.matches = createFabioGroupLeague(tournament);
+      else if (format === 'league' || format === 'mixed') tournament.matches = tournament.mode === 'dynamic' ? createDynamicTeamLeague(tournament) : createRoundRobin(shuffle(ids), tournament.settings.leagueLegs, tournament);
       else beginKnockout(tournament, shuffle(ids), 'draw');
       await persistTournament(tournament);
       closeModal();
@@ -3107,21 +3563,26 @@ closeModal = function() {
   document.body.classList.remove('modal-open');
 }
 
-standings = function(tournament) {
+standings = function(tournament, groupKey = '') {
   const pointsWin = Math.max(0, Number(tournament.settings?.pointsWin ?? 3));
   const pointsDraw = Math.max(0, Number(tournament.settings?.pointsDraw ?? 1));
-  const rows = Object.fromEntries((tournament.participants || []).map((participant) => [participant.id, {
-    id: participant.id,
-    pj: 0,
-    v: 0,
-    e: 0,
-    d: 0,
-    gp: 0,
-    gc: 0,
-    sg: 0,
-    pts: 0,
-    form: []
-  }]));
+  const allowedIds = groupKey && tournament.format === 'fabio'
+    ? new Set(fabioGroupIds(tournament, groupKey))
+    : new Set((tournament.participants || []).map((participant) => participant.id));
+  const rows = Object.fromEntries((tournament.participants || [])
+    .filter((participant) => allowedIds.has(participant.id))
+    .map((participant) => [participant.id, {
+      id: participant.id,
+      pj: 0,
+      v: 0,
+      e: 0,
+      d: 0,
+      gp: 0,
+      gc: 0,
+      sg: 0,
+      pts: 0,
+      form: []
+    }]));
 
   const applyResult = (row, ownScore, opponentScore, result) => {
     if (!row) return;
@@ -3143,6 +3604,7 @@ standings = function(tournament) {
   };
 
   for (const match of leagueMatches(tournament)) {
+    if (groupKey && match.groupKey !== groupKey) continue;
     if (!match.played || !match.homeId || !match.awayId) continue;
     const homeScore = Number(match.homeScore ?? 0);
     const awayScore = Number(match.awayScore ?? 0);
@@ -3180,9 +3642,10 @@ standings = function(tournament) {
   );
 }
 
+
 function ensureTournamentProgress(tournament) {
   let changed = false;
-  if (tournament.format === 'mixed' && allLeagueMatchesPlayed(tournament) && !tournament.knockoutState?.started) {
+  if (isHybridFormat(tournament.format) && allLeagueMatchesPlayed(tournament) && !tournament.knockoutState?.started) {
     const qualifiers = Math.min(tournament.participants.length, Math.max(2, Number(tournament.settings?.qualifiers || 2)));
     tournament.settings.qualifiers = qualifiers;
     generateMixedKnockout(tournament);
@@ -3264,11 +3727,9 @@ centerMatchListHtml = function(tournament, selectedId) {
   }).join('');
 }
 
-function liveStandingsHtml(tournament) {
-  const rows = standings(tournament);
-  const qualifiers = tournament.format === 'mixed' ? Math.max(0, Number(tournament.settings?.qualifiers || 0)) : 0;
-  const profile = getGameProfile(tournament);
-  return `<div class="live-table-wrap">
+function liveStandingsTableHtml(tournament, rows, qualifiers, title = '') {
+  return `<div class="live-table-wrap ${title ? 'group-live-table' : ''}">
+    ${title ? `<div class="live-group-title">${escapeHtml(title)}</div>` : ''}
     <div class="live-table-head"><span>#</span><span>PARTICIPANTE</span><span>J</span><span>V</span><span>E</span><span>D</span><span>SG</span><span>PTS</span></div>
     <div class="live-table-body">${rows.map((row, index) => {
       const qualified = qualifiers && index < qualifiers;
@@ -3279,9 +3740,21 @@ function liveStandingsHtml(tournament) {
         <span>${row.pj}</span><span>${row.v}</span><span>${row.e}</span><span>${row.d}</span><span class="${row.sg > 0 ? 'positive' : row.sg < 0 ? 'negative' : ''}">${row.sg > 0 ? '+' : ''}${row.sg}</span><strong>${row.pts}</strong>
       </div>`;
     }).join('')}</div>
-    <div class="live-table-legend"><span>${profile.scoreLabel}: ${rows.reduce((sum,row)=>sum+row.gp,0)} registrados</span>${qualifiers ? `<b>Os ${qualifiers} primeiros avançam</b>` : '<b>Classificação final da liga</b>'}</div>
   </div>`;
 }
+
+function liveStandingsHtml(tournament) {
+  const profile = getGameProfile(tournament);
+  if (tournament.format === 'fabio') {
+    const perGroup = Number(tournament.settings.fabioQualifiersPerGroup || 1);
+    const groups = fabioStandings(tournament);
+    return `<div class="live-fabio-groups">${liveStandingsTableHtml(tournament,groups.A,perGroup,'GRUPO A')}${liveStandingsTableHtml(tournament,groups.B,perGroup,'GRUPO B')}<div class="live-table-legend"><span>${profile.scoreLabel} registrados nos dois grupos</span><b>${perGroup} de cada grupo avançam</b></div></div>`;
+  }
+  const rows = standings(tournament);
+  const qualifiers = isHybridFormat(tournament.format) ? Math.max(0, Number(tournament.settings?.qualifiers || 0)) : 0;
+  return `${liveStandingsTableHtml(tournament,rows,qualifiers)}<div class="live-table-legend"><span>${profile.scoreLabel}: ${rows.reduce((sum,row)=>sum+row.gp,0)} registrados</span>${qualifiers ? `<b>Os ${qualifiers} primeiros avançam</b>` : '<b>Classificação final da liga</b>'}</div>`;
+}
+
 
 function centerBracketSlotHtml(slot, model, score, winner) {
   const label = bracketSlotLabel(slot, model);
@@ -3354,8 +3827,8 @@ function scrollCenterBracketToActiveStage(tournament, selectedMatch = null, cont
 }
 
 gamesCenterContextHtml = function(tournament, mode = '') {
-  const hasLeague = tournament.format !== 'knockout';
-  const hasKnockout = tournament.format !== 'league';
+  const hasLeague = hasLeagueFormat(tournament.format);
+  const hasKnockout = hasKnockoutFormat(tournament.format);
   const active = activeCenterPhase(tournament);
   const selectedMode = mode || active;
   const showLeague = selectedMode === 'league' && hasLeague;
@@ -3369,7 +3842,7 @@ gamesCenterContextHtml = function(tournament, mode = '') {
       </div>
     </div>
     ${showLeague ? liveStandingsHtml(tournament) : fullCenterBracketHtml(tournament)}
-    ${tournament.format === 'mixed' && !tournament.knockoutState?.started ? `<div class="phase-waiting ${leagueCompleted ? 'ready' : ''}"><strong>${leagueCompleted ? 'Liga concluída' : 'Fase classificatória em andamento'}</strong><span>${leagueCompleted ? 'A chave será criada automaticamente.' : `${leagueMatches(tournament).filter((match)=>match.played).length}/${leagueMatches(tournament).length} jogos da liga concluídos.`}</span></div>` : ''}
+    ${isHybridFormat(tournament.format) && !tournament.knockoutState?.started ? `<div class="phase-waiting ${leagueCompleted ? 'ready' : ''}"><strong>${leagueCompleted ? 'Liga concluída' : 'Fase classificatória em andamento'}</strong><span>${leagueCompleted ? 'A chave será criada automaticamente.' : `${leagueMatches(tournament).filter((match)=>match.played).length}/${leagueMatches(tournament).length} jogos da liga concluídos.`}</span></div>` : ''}
     <button type="button" class="button ghost context-open-button" data-center-open-tab="${showLeague ? 'standings' : 'bracket'}">Abrir painel completo</button>
   </section>`;
 }
@@ -3496,7 +3969,7 @@ openGamesCenter = function(tournamentId, requestedMatchId = '', requestedContext
   }
   $('[data-center-clear]')?.addEventListener('click', async () => {
     if (!confirm('Limpar este resultado? Fases posteriores do mata-mata também poderão ser removidas.')) return;
-    if (selected.stage === 'league' && tournament.format === 'mixed' && tournament.knockoutState.started) resetMixedKnockout(tournament);
+    if (selected.stage === 'league' && isHybridFormat(tournament.format) && tournament.knockoutState.started) resetMixedKnockout(tournament);
     clearMatchResult(tournament, selected);
     try {
       await persistTournament(tournament);
@@ -3562,7 +4035,7 @@ saveMatchFromForm = async function(tournament, match) {
     if (!winnerId) throw new Error('Selecione o vencedor da partida.');
   }
 
-  if (match.stage === 'league' && tournament.format === 'mixed' && tournament.knockoutState.started) {
+  if (match.stage === 'league' && isHybridFormat(tournament.format) && tournament.knockoutState.started) {
     if (!confirm('Alterar a fase de liga recriará o mata-mata com a nova classificação. Continuar?')) throw new Error('Alteração cancelada.');
     resetMixedKnockout(tournament);
   }
@@ -3605,7 +4078,7 @@ saveMatchFromForm = async function(tournament, match) {
   updateLeagueChampion(tournament);
   if (match.stage === 'knockout') advanceKnockout(tournament);
   let transitioned = false;
-  if (match.stage === 'league' && tournament.format === 'mixed' && allLeagueMatchesPlayed(tournament) && !tournament.knockoutState.started) {
+  if (match.stage === 'league' && isHybridFormat(tournament.format) && allLeagueMatchesPlayed(tournament) && !tournament.knockoutState.started) {
     generateMixedKnockout(tournament);
     transitioned = true;
   }

@@ -57,3 +57,21 @@ O projeto continua sem login, conforme solicitado. Portanto, quem tiver acesso �
 - Estatísticas aparecem diretamente abaixo da Central, sem faixa intermediária.
 - Fotos dos jogadores nas tabelas e no elenco estatístico.
 - Cor tema configurável na criação e na edição do campeonato.
+
+## V12 — Formatos Milton e Fábio
+
+### Formato Milton
+- Número par de jogadores, mínimo de 4.
+- Liga disputada em partidas 2v2 com duplas temporárias.
+- Nenhuma dupla de companheiros se repete.
+- Todos terminam a fase com exatamente a mesma quantidade de jogos.
+- A pontuação e a classificação pertencem individualmente aos jogadores.
+- Após a liga, os classificados disputam mata-mata individual 1v1.
+- A tela de criação oferece apenas quantidades de jogos matematicamente possíveis.
+
+### Liga Fábio
+- Sorteio automático dos jogadores em Grupo A e Grupo B.
+- Liga somente entre jogadores do mesmo grupo.
+- Quantidade de classificados definida por grupo.
+- Mata-mata por sorteio livre ou cruzamento entre grupos.
+- No cruzamento: 1º A x último classificado B, 1º B x último classificado A e assim por diante.

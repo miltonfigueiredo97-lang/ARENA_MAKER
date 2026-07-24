@@ -1696,3 +1696,31 @@ body.celebrating-champion { overflow:hidden !important; }
     display: none;
   }
 }
+
+/* ===== V12 — FORMATOS MILTON E FÁBIO ===== */
+.format-choice-grid { grid-template-columns:repeat(5,minmax(0,1fr)); }
+.format-choice-grid .choice-card { min-height:132px; align-content:start; }
+.notice.special-format { border-color:color-mix(in srgb,var(--game-accent) 45%,var(--line)); background:linear-gradient(90deg,var(--game-soft),rgba(8,13,20,.88)); }
+.special-format-rules { position:relative; overflow:hidden; }
+.special-format-rules::after { content:''; position:absolute; inset:auto -90px -100px auto; width:240px; height:240px; border-radius:50%; background:var(--game-glow); filter:blur(16px); pointer-events:none; }
+.special-plan { position:relative; z-index:1; }
+.fabio-groups-preview { display:grid; grid-template-columns:auto 1fr auto 1fr; align-items:center; gap:9px; padding:11px 13px; border:1px solid var(--line); background:#080d14; }
+.fabio-groups-preview span { color:var(--game-accent); font-size:.52rem; font-weight:800; letter-spacing:.08em; }
+.fabio-groups-preview strong { font-size:.68rem; }
+.fabio-standings-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; align-items:start; }
+.table-player-identity { display:flex; align-items:center; gap:9px; }
+.compact-fabio-groups { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); min-height:0; }
+.compact-fabio-groups > section + section { border-left:1px solid var(--line); }
+.compact-fabio-groups header,.live-group-title { padding:9px 12px; border-bottom:1px solid var(--line); color:var(--game-accent); font-size:.55rem; font-weight:900; letter-spacing:.1em; }
+.live-fabio-groups { min-height:0; overflow:auto; }
+.live-fabio-groups .group-live-table + .group-live-table { margin-top:12px; border-top:1px solid var(--line); }
+.center-round-group.league .center-round-title span { color:var(--game-accent); }
+
+@media (max-width:1350px) {
+  .format-choice-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
+}
+@media (max-width:900px) {
+  .format-choice-grid,.fabio-standings-grid,.compact-fabio-groups { grid-template-columns:1fr; }
+  .compact-fabio-groups > section + section { border-left:0; border-top:1px solid var(--line); }
+  .fabio-groups-preview { grid-template-columns:auto 1fr; }
+}
