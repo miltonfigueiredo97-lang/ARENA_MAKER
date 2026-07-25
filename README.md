@@ -88,3 +88,13 @@ Antes de criar campeonatos nos formatos Milton ou Liga Fábio, execute `supabase
 - Todos os grupos precisam ter o mesmo tamanho e usar todos os participantes; por isso o seletor mostra somente divisões exatas.
 - A classificação, a Central ao vivo e a tela dos grupos se adaptam automaticamente a Grupo A, B, C, D e demais grupos.
 - No cruzamento por classificação, o sistema evita confrontos entre jogadores do mesmo grupo na primeira rodada sempre que matematicamente possível.
+
+## V12.3 — Liga Fábio livre
+
+- Quantidade de grupos escolhida manualmente.
+- Grupos podem ter tamanhos diferentes, inclusive 1, 3 e 5 jogadores em um campeonato com 9 participantes.
+- Cotas de classificação independentes por grupo, incluindo zero classificados em um grupo.
+- Cada grupo pode classificar seus melhores ou seus piores colocados.
+- Alternativa de classificação por tabela geral entre todos os grupos.
+- A tabela geral compara pontos por jogo, aproveitamento, saldo por jogo e produção por jogo para não favorecer grupos maiores.
+- Folgas do mata-mata são entregues às melhores campanhas gerais entre os classificados, independentemente do grupo.

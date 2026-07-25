@@ -296,7 +296,7 @@ function loadLocalData() {
 function normalizeTournament(raw) {
   if (!raw || typeof raw !== 'object') return raw;
   const tournament = clone(raw);
-  tournament.version = Math.max(Number(tournament.version || 0), 13);
+  tournament.version = Math.max(Number(tournament.version || 0), 14);
   tournament.gameProfile = tournament.gameProfile || detectGameProfile(tournament.game);
   const profile = getGameProfile(tournament.gameProfile);
   tournament.game = profile.label;
@@ -334,19 +334,38 @@ function normalizeTournament(raw) {
     dynamicRounds: Math.max(1, Number(tournament.settings?.dynamicRounds || 5)),
     dynamicBlockRounds: Math.max(1, Number(tournament.settings?.dynamicBlockRounds || 2)),
     miltonGamesPerPlayer: Math.max(1, Number(tournament.settings?.miltonGamesPerPlayer || tournament.settings?.dynamicRounds || 4)),
-    fabioGroupCount: resolveFabioStructure(tournament.participants.length, tournament.settings?.fabioGroupCount || 2, tournament.settings?.fabioPlayersPerGroup || 0).groupCount,
-    fabioPlayersPerGroup: resolveFabioStructure(tournament.participants.length, tournament.settings?.fabioGroupCount || 2, tournament.settings?.fabioPlayersPerGroup || 0).playersPerGroup,
-    fabioQualifiersPerGroup: Math.max(1, Number(tournament.settings?.fabioQualifiersPerGroup || Math.max(1, Math.floor(Number(tournament.settings?.qualifiers || 2) / Math.max(2, Number(tournament.settings?.fabioGroupCount || 2)))))),
+    fabioGroupCount: Math.max(2, Number(tournament.settings?.fabioGroupCount || tournament.settings?.fabioGroupSizes?.length || 2)),
+    fabioGroupSizes: Array.isArray(tournament.settings?.fabioGroupSizes) ? tournament.settings.fabioGroupSizes : [],
+    fabioQualifiersByGroup: Array.isArray(tournament.settings?.fabioQualifiersByGroup) ? tournament.settings.fabioQualifiersByGroup : [],
+    fabioPlayersPerGroup: Math.max(0, Number(tournament.settings?.fabioPlayersPerGroup || 0)),
+    fabioQualifiersPerGroup: Math.max(0, Number(tournament.settings?.fabioQualifiersPerGroup || Math.max(1, Math.floor(Number(tournament.settings?.qualifiers || 2) / Math.max(2, Number(tournament.settings?.fabioGroupCount || 2)))))),
     fabioGroupPairing: tournament.settings?.fabioGroupPairing || (tournament.settings?.knockoutPairing === 'draw' ? 'draw' : 'crossed'),
+    fabioQualificationMode: tournament.settings?.fabioQualificationMode || 'per_group',
+    fabioSelectionByGroup: Array.isArray(tournament.settings?.fabioSelectionByGroup) ? tournament.settings.fabioSelectionByGroup : [],
+    fabioOverallQualifiers: Math.max(2, Number(tournament.settings?.fabioOverallQualifiers || tournament.settings?.qualifiers || 2)),
+    fabioOverallSelection: tournament.settings?.fabioOverallSelection === 'worst' ? 'worst' : 'best',
     groupAssignments: tournament.settings?.groupAssignments || {},
     knockoutUnit: tournament.settings?.knockoutUnit || 'individual'
   };
   if (tournament.format === 'fabio') {
-    const structure = resolveFabioStructure(tournament.participants.length, tournament.settings.fabioGroupCount, tournament.settings.fabioPlayersPerGroup);
+    const structure = normalizeFabioGroupConfig(
+      tournament.participants.length,
+      tournament.settings.fabioGroupSizes,
+      tournament.settings.fabioQualifiersByGroup,
+      tournament.settings.fabioGroupCount,
+      tournament.settings.fabioPlayersPerGroup,
+      tournament.settings.fabioQualifiersPerGroup || 1
+    );
     tournament.settings.fabioGroupCount = structure.groupCount;
-    tournament.settings.fabioPlayersPerGroup = structure.playersPerGroup;
-    tournament.settings.fabioQualifiersPerGroup = Math.min(structure.playersPerGroup, Math.max(1, Number(tournament.settings.fabioQualifiersPerGroup || 1)));
-    tournament.settings.qualifiers = tournament.settings.fabioQualifiersPerGroup * structure.groupCount;
+    tournament.settings.fabioGroupSizes = structure.sizes;
+    tournament.settings.fabioQualifiersByGroup = structure.qualifiers;
+    tournament.settings.fabioPlayersPerGroup = structure.sizes.every((size) => size === structure.sizes[0]) ? structure.sizes[0] : 0;
+    tournament.settings.fabioQualifiersPerGroup = structure.qualifiers.every((value) => value === structure.qualifiers[0]) ? structure.qualifiers[0] : 0;
+    tournament.settings.fabioSelectionByGroup = structure.sizes.map((_, index) => tournament.settings.fabioSelectionByGroup[index] === 'worst' ? 'worst' : 'best');
+    tournament.settings.fabioOverallQualifiers = Math.min(tournament.participants.length, Math.max(2, Number(tournament.settings.fabioOverallQualifiers || structure.totalQualifiers)));
+    tournament.settings.qualifiers = tournament.settings.fabioQualificationMode === 'overall'
+      ? tournament.settings.fabioOverallQualifiers
+      : structure.totalQualifiers;
   }
   tournament.matches = (tournament.matches || []).map((match) => {
     const oldStage = String(match.stage || '').toLowerCase();
@@ -601,9 +620,15 @@ function newWizardState() {
     dynamicBlockRounds: 2,
     miltonGamesPerPlayer: 4,
     fabioGroupCount: 2,
-    fabioPlayersPerGroup: 5,
-    fabioQualifiersPerGroup: 4,
+    fabioGroupSizes: [],
+    fabioQualifiersByGroup: [],
+    fabioPlayersPerGroup: 0,
+    fabioQualifiersPerGroup: 0,
     fabioGroupPairing: 'crossed',
+    fabioQualificationMode: 'per_group',
+    fabioSelectionByGroup: [],
+    fabioOverallQualifiers: 8,
+    fabioOverallSelection: 'best',
     knockoutUnit: 'individual'
   };
 }
@@ -783,46 +808,113 @@ function miltonPlan(participantCount, gamesPerPlayer) {
   };
 }
 
-function fabioValidGroupCounts(participantCount) {
-  const count = Math.max(0, Number(participantCount) || 0);
-  const values = [];
-  for (let groups = 2; groups <= Math.floor(count / 2); groups += 1) {
-    if (count % groups === 0 && count / groups >= 2) values.push(groups);
-  }
-  return values;
-}
-
 function fabioGroupKey(index) {
-  return String.fromCharCode(65 + index);
+  let value = Math.max(0, Number(index) || 0) + 1;
+  let label = '';
+  while (value > 0) {
+    value -= 1;
+    label = String.fromCharCode(65 + (value % 26)) + label;
+    value = Math.floor(value / 26);
+  }
+  return label;
 }
 
-function resolveFabioStructure(participantCount, requestedGroups = 2, requestedPlayersPerGroup = 0) {
-  const count = Math.max(0, Number(participantCount) || 0);
-  const validGroups = fabioValidGroupCounts(count);
-  let groupCount = Number(requestedGroups) || 0;
-  const playersPerGroup = Number(requestedPlayersPerGroup) || 0;
-  if (!validGroups.includes(groupCount) && playersPerGroup >= 2 && count % playersPerGroup === 0) {
-    const derived = count / playersPerGroup;
-    if (validGroups.includes(derived)) groupCount = derived;
+function defaultFabioGroupSizes(participantCount, groupCount = 2) {
+  const total = Math.max(0, Number(participantCount) || 0);
+  const count = Math.min(Math.max(2, Number(groupCount) || 2), Math.max(2, total));
+  const base = Math.floor(total / count);
+  const remainder = total % count;
+  return Array.from({ length: count }, (_, index) => base + (index < remainder ? 1 : 0));
+}
+
+function normalizeFabioGroupConfig(participantCount, rawSizes = [], rawQualifiers = [], requestedCount = 2, legacyPlayersPerGroup = 0, legacyQualifiers = 1) {
+  const total = Math.max(0, Number(participantCount) || 0);
+  let groupCount = Math.min(Math.max(2, Number(requestedCount) || rawSizes?.length || 2), Math.max(2, total));
+  let sizes = Array.isArray(rawSizes) ? rawSizes.slice(0, groupCount).map((value) => Math.max(1, Number(value) || 1)) : [];
+
+  if (sizes.length !== groupCount || sizes.reduce((sum, value) => sum + value, 0) !== total) {
+    const legacySize = Math.max(0, Number(legacyPlayersPerGroup) || 0);
+    if (legacySize && legacySize * groupCount === total) sizes = Array.from({ length: groupCount }, () => legacySize);
+    else sizes = defaultFabioGroupSizes(total, groupCount);
   }
-  if (!validGroups.includes(groupCount)) groupCount = validGroups.includes(2) ? 2 : (validGroups[0] || 0);
+
+  groupCount = sizes.length;
+  const fallbackQualifier = Math.max(1, Number(legacyQualifiers) || 1);
+  const qualifiers = sizes.map((size, index) => Math.min(size, Math.max(0, Number(rawQualifiers?.[index] ?? fallbackQualifier) || 0)));
   return {
     groupCount,
-    playersPerGroup: groupCount ? count / groupCount : 0,
-    validGroups,
+    sizes,
+    qualifiers,
+    totalQualifiers: qualifiers.reduce((sum, value) => sum + value, 0),
     groupKeys: Array.from({ length: groupCount }, (_, index) => fabioGroupKey(index))
   };
 }
 
-function fabioGroupSizes(participantCount, groupCount = 2) {
-  const structure = resolveFabioStructure(participantCount, groupCount);
-  return Array.from({ length: structure.groupCount }, () => structure.playersPerGroup);
+function resizeFabioWizardGroups(wizard, participantCount, groupCount) {
+  const total = Math.max(0, Number(participantCount) || 0);
+  const count = Math.min(Math.max(2, Number(groupCount) || 2), Math.max(2, total));
+  const oldSizes = Array.isArray(wizard.fabioGroupSizes) ? wizard.fabioGroupSizes : [];
+  const oldQuotas = Array.isArray(wizard.fabioQualifiersByGroup) ? wizard.fabioQualifiersByGroup : [];
+  const oldDirections = Array.isArray(wizard.fabioSelectionByGroup) ? wizard.fabioSelectionByGroup : [];
+  const defaults = defaultFabioGroupSizes(total, count);
+  wizard.fabioGroupCount = count;
+  wizard.fabioGroupSizes = Array.from({ length: count }, (_, index) => Math.max(1, Number(oldSizes[index]) || defaults[index] || 1));
+  // Ao mudar a quantidade de grupos, começa com uma divisão válida. Depois disso,
+  // os campos podem ser editados livremente, inclusive 1 / 3 / 5.
+  if (wizard.fabioGroupSizes.reduce((sum, value) => sum + value, 0) !== total) wizard.fabioGroupSizes = defaults;
+  wizard.fabioQualifiersByGroup = wizard.fabioGroupSizes.map((size, index) => Math.min(size, Math.max(1, Number(oldQuotas[index]) || Math.min(4, size))));
+  wizard.fabioSelectionByGroup = wizard.fabioGroupSizes.map((_, index) => oldDirections[index] === 'worst' ? 'worst' : 'best');
+  wizard.fabioOverallQualifiers = Math.min(total, Math.max(2, Number(wizard.fabioOverallQualifiers) || wizard.fabioQualifiersByGroup.reduce((sum, value) => sum + value, 0)));
+  wizard.qualifiers = wizard.fabioQualificationMode === 'overall'
+    ? wizard.fabioOverallQualifiers
+    : wizard.fabioQualifiersByGroup.reduce((sum, value) => sum + value, 0);
 }
 
-function fabioLeagueMatchesCount(participantCount, groupCount = 2, legs = 1) {
-  const structure = resolveFabioStructure(participantCount, groupCount);
-  const perGroup = structure.playersPerGroup;
-  return structure.groupCount * ((perGroup * (perGroup - 1)) / 2) * Math.max(1, Number(legs) || 1);
+function ensureWizardFabioConfig(wizard, participantCount) {
+  const total = Math.max(0, Number(participantCount) || 0);
+  const count = Math.min(Math.max(2, Number(wizard.fabioGroupCount) || 2), Math.max(2, total));
+  const defaults = defaultFabioGroupSizes(total, count);
+  wizard.fabioGroupCount = count;
+  wizard.fabioGroupSizes = Array.from({ length: count }, (_, index) => Math.max(1, Number(wizard.fabioGroupSizes?.[index]) || defaults[index] || 1));
+  wizard.fabioQualifiersByGroup = wizard.fabioGroupSizes.map((size, index) => Math.min(size, Math.max(1, Number(wizard.fabioQualifiersByGroup?.[index]) || Math.min(4, size))));
+  wizard.fabioSelectionByGroup = wizard.fabioGroupSizes.map((_, index) => wizard.fabioSelectionByGroup?.[index] === 'worst' ? 'worst' : 'best');
+  wizard.fabioQualificationMode = wizard.fabioQualificationMode === 'overall' ? 'overall' : 'per_group';
+  wizard.fabioOverallSelection = wizard.fabioOverallSelection === 'worst' ? 'worst' : 'best';
+  wizard.fabioOverallQualifiers = Math.min(total, Math.max(2, Number(wizard.fabioOverallQualifiers) || wizard.fabioQualifiersByGroup.reduce((sum, value) => sum + value, 0)));
+  wizard.fabioPlayersPerGroup = wizard.fabioGroupSizes.every((size) => size === wizard.fabioGroupSizes[0]) ? wizard.fabioGroupSizes[0] : 0;
+  wizard.fabioQualifiersPerGroup = wizard.fabioQualifiersByGroup.every((value) => value === wizard.fabioQualifiersByGroup[0]) ? wizard.fabioQualifiersByGroup[0] : 0;
+  wizard.qualifiers = wizard.fabioQualificationMode === 'overall'
+    ? wizard.fabioOverallQualifiers
+    : wizard.fabioQualifiersByGroup.reduce((sum, value) => sum + value, 0);
+  return {
+    groupCount: count,
+    sizes: wizard.fabioGroupSizes,
+    qualifiers: wizard.fabioQualifiersByGroup,
+    selectionByGroup: wizard.fabioSelectionByGroup,
+    totalQualifiers: wizard.qualifiers,
+    groupKeys: Array.from({ length: count }, (_, index) => fabioGroupKey(index))
+  };
+}
+
+function resolveFabioStructure(participantCount, requestedGroups = 2, requestedPlayersPerGroup = 0, rawSizes = [], rawQualifiers = [], legacyQualifiers = 1) {
+  const config = normalizeFabioGroupConfig(participantCount, rawSizes, rawQualifiers, requestedGroups, requestedPlayersPerGroup, legacyQualifiers);
+  return {
+    ...config,
+    playersPerGroup: config.sizes.every((size) => size === config.sizes[0]) ? config.sizes[0] : 0,
+    validGroups: Array.from({ length: Math.max(0, Number(participantCount) || 0) - 1 }, (_, index) => index + 2)
+  };
+}
+
+function fabioGroupSizes(participantCount, groupCount = 2, rawSizes = []) {
+  return normalizeFabioGroupConfig(participantCount, rawSizes, [], groupCount).sizes;
+}
+
+function fabioLeagueMatchesCount(groupSizesOrParticipants, groupCountOrLegs = 2, maybeLegs = 1) {
+  const sizes = Array.isArray(groupSizesOrParticipants)
+    ? groupSizesOrParticipants
+    : defaultFabioGroupSizes(groupSizesOrParticipants, groupCountOrLegs);
+  const legs = Array.isArray(groupSizesOrParticipants) ? Math.max(1, Number(groupCountOrLegs) || 1) : Math.max(1, Number(maybeLegs) || 1);
+  return sizes.reduce((total, size) => total + ((size * (size - 1)) / 2), 0) * legs;
 }
 
 function miltonRulesHtml(wizard, participantCount) {
@@ -850,33 +942,50 @@ function miltonRulesHtml(wizard, participantCount) {
 }
 
 function fabioRulesHtml(wizard, participantCount) {
-  const structure = resolveFabioStructure(participantCount, wizard.fabioGroupCount, wizard.fabioPlayersPerGroup);
-  wizard.fabioGroupCount = structure.groupCount;
-  wizard.fabioPlayersPerGroup = structure.playersPerGroup;
-  const maxPerGroup = Math.max(1, structure.playersPerGroup);
-  wizard.fabioQualifiersPerGroup = Math.min(maxPerGroup, Math.max(1, Number(wizard.fabioQualifiersPerGroup) || Math.min(4, maxPerGroup)));
-  wizard.qualifiers = wizard.fabioQualifiersPerGroup * structure.groupCount;
-  const playerOptions = structure.validGroups.map((groups) => participantCount / groups).sort((a,b)=>b-a);
-  const preview = structure.groupKeys.map((key) => `<span>GRUPO ${key}</span><strong>${structure.playersPerGroup} jogadores</strong>`).join('');
+  const config = ensureWizardFabioConfig(wizard, participantCount);
+  const perGroupMode = wizard.fabioQualificationMode !== 'overall';
+  const rows = config.groupKeys.map((key, index) => {
+    const size = config.sizes[index];
+    const qualifiers = config.qualifiers[index];
+    const direction = config.selectionByGroup[index];
+    const matches = ((size * (size - 1)) / 2) * Math.max(1, Number(wizard.leagueLegs) || 1);
+    return `<div class="fabio-group-config-row" data-fabio-group-row="${index}">
+      <div class="fabio-group-name"><span>GRUPO</span><strong>${key}</strong></div>
+      <label class="field"><span>Jogadores neste grupo</span><input data-fabio-size="${index}" type="number" min="1" max="${participantCount}" value="${size}"></label>
+      ${perGroupMode ? `<label class="field"><span>Quantos classificam</span><input data-fabio-qualifiers="${index}" type="number" min="0" max="${size}" value="${qualifiers}"></label>
+      <label class="field"><span>Quem classifica</span><select data-fabio-direction="${index}"><option value="best" ${direction === 'best' ? 'selected' : ''}>Melhores do grupo</option><option value="worst" ${direction === 'worst' ? 'selected' : ''}>Piores do grupo</option></select></label>` : '<div class="fabio-global-note">Classificação definida pela tabela geral</div>'}
+      <div class="fabio-group-matches"><span>PARTIDAS</span><strong>${matches}</strong><small>${size === 1 ? 'Sem jogos dentro do grupo.' : `${(size - 1) * Math.max(1, Number(wizard.leagueLegs) || 1)} jogo(s) por jogador.`}</small></div>
+    </div>`;
+  }).join('');
+  const usedPlayers = config.sizes.reduce((sum, value) => sum + value, 0);
+  const totalMatches = fabioLeagueMatchesCount(config.sizes, wizard.leagueLegs);
   return `<section class="rule-section special-format-rules fabio-rules">
-    <div class="rule-section-head"><div><span class="section-number">F</span><div><h3>Liga Fábio · grupos configuráveis</h3><p>Todos os grupos têm o mesmo tamanho. Os jogadores disputam somente dentro do próprio grupo.</p></div></div></div>
+    <div class="rule-section-head"><div><span class="section-number">F</span><div><h3>Liga Fábio · grupos totalmente livres</h3><p>Defina manualmente quantos grupos existirão, o tamanho de cada grupo e como os classificados serão escolhidos.</p></div></div></div>
     <div class="grid cols-3">
-      <label class="field"><span>Quantidade de grupos</span><select id="wizardFabioGroupCount">${structure.validGroups.map((value)=>`<option value="${value}" ${structure.groupCount===value?'selected':''}>${value} grupos</option>`).join('')}</select><small>Mostramos apenas divisões exatas para usar todos os jogadores.</small></label>
-      <label class="field"><span>Jogadores por grupo</span><select id="wizardFabioPlayersPerGroup">${playerOptions.map((value)=>`<option value="${value}" ${structure.playersPerGroup===value?'selected':''}>${value} jogadores</option>`).join('')}</select></label>
-      <label class="field"><span>Classificados por grupo</span><input id="wizardFabioQualifiers" type="number" min="1" max="${maxPerGroup}" value="${wizard.fabioQualifiersPerGroup}"><small>Total no mata-mata: ${wizard.qualifiers}.</small></label>
-    </div>
-    <div class="grid cols-3">
+      <label class="field"><span>Quantidade de grupos</span><input id="wizardFabioGroupCount" type="number" min="2" max="${Math.max(2, participantCount)}" value="${config.groupCount}"><small>Depois edite o tamanho de cada grupo abaixo.</small></label>
       <label class="field"><span>Turnos em cada grupo</span><select id="wizardLeagueLegs"><option value="1" ${wizard.leagueLegs === 1 ? 'selected' : ''}>Turno único</option><option value="2" ${wizard.leagueLegs === 2 ? 'selected' : ''}>Ida e volta</option></select></label>
+      <div class="fabio-total-box ${usedPlayers === participantCount ? 'valid' : 'invalid'}"><span>JOGADORES DISTRIBUÍDOS</span><strong>${usedPlayers}/${participantCount}</strong><small>${usedPlayers === participantCount ? 'Distribuição válida.' : `A soma precisa ser exatamente ${participantCount}.`}</small></div>
+    </div>
+    <section class="fabio-qualification-box">
+      <div class="section-mini-title"><span>CLASSIFICAÇÃO PARA O MATA-MATA</span><strong>Como escolher quem avança</strong></div>
+      <div class="choice-grid pairing-grid">
+        ${ruleChoice('fabio-qualification','per_group','Cotas por grupo','Você define separadamente quantos avançam de cada grupo e se serão os melhores ou os piores.',wizard.fabioQualificationMode,'A/B')}
+        ${ruleChoice('fabio-qualification','overall','Tabela geral','Todos os jogadores são comparados em uma classificação geral normalizada, independentemente do grupo.',wizard.fabioQualificationMode,'Σ')}
+      </div>
+      ${perGroupMode ? '<div class="notice info">As cotas podem ser diferentes: por exemplo, 3 do Grupo A, 3 do B e 2 do C.</div>' : `<div class="grid cols-2"><label class="field"><span>Total de classificados</span><input id="wizardFabioOverallQualifiers" type="number" min="2" max="${participantCount}" value="${wizard.fabioOverallQualifiers}"></label><label class="field"><span>Quem avança na tabela geral</span><select id="wizardFabioOverallSelection"><option value="best" ${wizard.fabioOverallSelection === 'best' ? 'selected' : ''}>Melhores campanhas gerais</option><option value="worst" ${wizard.fabioOverallSelection === 'worst' ? 'selected' : ''}>Piores campanhas gerais</option></select></label></div><div class="notice info">Para comparar grupos de tamanhos diferentes, o sistema usa pontos por jogo, aproveitamento, saldo por jogo e gols/pontos por jogo.</div>`}
+    </section>
+    <div class="fabio-group-config-list">${rows}</div>
+    <div class="grid cols-2">
       <label class="field"><span>Pontos por vitória</span><input id="wizardPointsWin" type="number" min="1" value="${wizard.pointsWin}"></label>
       <label class="field"><span>Pontos por empate</span><input id="wizardPointsDraw" type="number" min="0" value="${wizard.pointsDraw}"></label>
     </div>
-    <div class="fabio-groups-preview dynamic">${preview}</div>
     <div class="dynamic-plan special-plan">
-      <div><span>GRUPOS</span><strong>${structure.groupCount}</strong></div>
-      <div><span>JOGOS DA FASE</span><strong>${fabioLeagueMatchesCount(participantCount, structure.groupCount, wizard.leagueLegs)}</strong></div>
+      <div><span>GRUPOS</span><strong>${config.groupCount}</strong></div>
+      <div><span>JOGOS DA FASE</span><strong>${totalMatches}</strong></div>
       <div><span>CLASSIFICADOS</span><strong>${wizard.qualifiers}</strong></div>
       <div><span>ELIMINADOS</span><strong>${Math.max(0, participantCount - wizard.qualifiers)}</strong></div>
     </div>
+    <div class="notice info">Exemplo válido com 9 jogadores: Grupo A com 1, Grupo B com 3 e Grupo C com 5. A distribuição não é recalculada automaticamente enquanto você edita.</div>
   </section>`;
 }
 
@@ -896,13 +1005,7 @@ function wizardRulesHtml(wizard) {
   }
 
   const hybrid = isHybridFormat(wizard.format);
-  if (wizard.format === 'fabio') {
-    const structure = resolveFabioStructure(participantCount, wizard.fabioGroupCount, wizard.fabioPlayersPerGroup);
-    wizard.fabioGroupCount = structure.groupCount;
-    wizard.fabioPlayersPerGroup = structure.playersPerGroup;
-    wizard.fabioQualifiersPerGroup = Math.min(Math.max(1, Number(wizard.fabioQualifiersPerGroup || 1)), Math.max(1, structure.playersPerGroup));
-    wizard.qualifiers = wizard.fabioQualifiersPerGroup * structure.groupCount;
-  }
+  if (wizard.format === 'fabio') ensureWizardFabioConfig(wizard, participantCount);
   if (hybrid && wizard.format !== 'fabio') wizard.qualifiers = Math.min(Math.max(2, Number(wizard.qualifiers) || 2), participantCount);
   const knockoutTotal = hybrid ? wizard.qualifiers : participantCount;
   const fullCounts = fullBracketCounts(Math.max(2, knockoutTotal));
@@ -1022,7 +1125,7 @@ function wizardReviewHtml(wizard) {
     : wizard.format === 'milton'
       ? miltonPlan(participants.length, wizard.miltonGamesPerPlayer).totalMatches
       : wizard.format === 'fabio'
-        ? fabioLeagueMatchesCount(participants.length, wizard.fabioGroupCount, wizard.leagueLegs)
+        ? fabioLeagueMatchesCount(wizard.fabioGroupSizes || [], wizard.leagueLegs)
         : wizard.mode === 'dynamic'
           ? dynamicLeaguePlan(participants.length, wizard.dynamicTeamSize, wizard.dynamicRounds).totalMatches
           : (participants.length * (participants.length - 1) / 2) * wizard.leagueLegs;
@@ -1040,9 +1143,10 @@ function wizardReviewHtml(wizard) {
     : wizard.format === 'fabio'
       ? `<div class="panel"><div class="panel-body"><table class="stats-table"><tbody>
           <tr><td>Quantidade de grupos</td><td class="num"><strong>${wizard.fabioGroupCount}</strong></td></tr>
-          <tr><td>Jogadores por grupo</td><td class="num">${wizard.fabioPlayersPerGroup}</td></tr>
-          <tr><td>Classificados por grupo</td><td class="num">${wizard.fabioQualifiersPerGroup}</td></tr>
-          <tr><td>Cruzamento</td><td class="num">${wizard.fabioGroupPairing === 'draw' ? 'Sorteio livre' : 'Entre grupos por classificação'}</td></tr>
+          <tr><td>Tamanhos dos grupos</td><td class="num">${(wizard.fabioGroupSizes || []).map((size,index)=>`Grupo ${fabioGroupKey(index)}: ${size}`).join(' · ')}</td></tr>
+          <tr><td>Regra de classificação</td><td class="num"><strong>${wizard.fabioQualificationMode === 'overall' ? 'Tabela geral entre todos os grupos' : 'Cotas diferentes por grupo'}</strong></td></tr>
+          <tr><td>Classificados</td><td class="num">${wizard.fabioQualificationMode === 'overall' ? `${wizard.fabioOverallQualifiers} ${wizard.fabioOverallSelection === 'worst' ? 'piores' : 'melhores'} campanhas gerais` : (wizard.fabioQualifiersByGroup || []).map((value,index)=>`Grupo ${fabioGroupKey(index)}: ${value} ${wizard.fabioSelectionByGroup?.[index] === 'worst' ? 'piores' : 'melhores'}`).join(' · ')}</td></tr>
+          <tr><td>Cruzamento</td><td class="num">${wizard.fabioGroupPairing === 'draw' ? 'Sorteio livre' : 'Entre grupos por classificação global'}</td></tr>
           <tr><td>Total no mata-mata</td><td class="num"><strong>${wizard.qualifiers}</strong></td></tr>
         </tbody></table></div></div>`
       : wizard.mode === 'dynamic'
@@ -1115,15 +1219,16 @@ function bindWizardStepEvents() {
       wizard.fabioGroupPairing = value;
       wizard.knockoutPairing = value === 'draw' ? 'draw' : 'crossed';
     }
+    if (group === 'fabio-qualification') {
+      wizard.fabioQualificationMode = value === 'overall' ? 'overall' : 'per_group';
+      ensureWizardFabioConfig(wizard, wizard.entrants.length);
+    }
     if (group === 'bracket-mode') {
       wizard.bracketMode = value;
       const total = wizard.mode === 'teams' ? wizard.teams.length : wizard.entrants.length;
       if (value === 'complete' && !isPowerOfTwo(wizard.qualifiers)) {
         if (wizard.format === 'fabio') {
-          const structure = resolveFabioStructure(total, wizard.fabioGroupCount, wizard.fabioPlayersPerGroup);
-          const validPerGroup = Array.from({ length: Math.max(1, structure.playersPerGroup) }, (_, index) => index + 1).filter((count) => isPowerOfTwo(count * structure.groupCount));
-          wizard.fabioQualifiersPerGroup = validPerGroup[validPerGroup.length - 1] || 1;
-          wizard.qualifiers = wizard.fabioQualifiersPerGroup * structure.groupCount;
+          wizard.bracketMode = 'flexible';
         } else {
           const options = fullBracketCounts(total);
           wizard.qualifiers = options[options.length - 1] || 2;
@@ -1190,28 +1295,36 @@ function bindWizardStepEvents() {
     renderWizard();
   });
   $('#wizardFabioGroupCount')?.addEventListener('change', () => {
-    const total = wizard.entrants.length;
-    wizard.fabioGroupCount = Number($('#wizardFabioGroupCount').value);
-    const structure = resolveFabioStructure(total, wizard.fabioGroupCount, 0);
-    wizard.fabioPlayersPerGroup = structure.playersPerGroup;
-    wizard.fabioQualifiersPerGroup = Math.min(wizard.fabioQualifiersPerGroup, structure.playersPerGroup);
-    wizard.qualifiers = wizard.fabioQualifiersPerGroup * structure.groupCount;
+    resizeFabioWizardGroups(wizard, wizard.entrants.length, Number($('#wizardFabioGroupCount').value));
     renderWizard();
   });
-  $('#wizardFabioPlayersPerGroup')?.addEventListener('change', () => {
-    const total = wizard.entrants.length;
-    wizard.fabioPlayersPerGroup = Number($('#wizardFabioPlayersPerGroup').value);
-    const structure = resolveFabioStructure(total, 0, wizard.fabioPlayersPerGroup);
-    wizard.fabioGroupCount = structure.groupCount;
-    wizard.fabioQualifiersPerGroup = Math.min(wizard.fabioQualifiersPerGroup, structure.playersPerGroup);
-    wizard.qualifiers = wizard.fabioQualifiersPerGroup * structure.groupCount;
+  $('#wizardFabioOverallQualifiers')?.addEventListener('change', () => {
+    wizard.fabioOverallQualifiers = Math.min(wizard.entrants.length, Math.max(2, Number($('#wizardFabioOverallQualifiers').value) || 2));
+    wizard.qualifiers = wizard.fabioOverallQualifiers;
     renderWizard();
   });
-  $('#wizardFabioQualifiers')?.addEventListener('change', () => {
-    wizard.fabioQualifiersPerGroup = Math.max(1, Number($('#wizardFabioQualifiers').value) || 1);
-    wizard.qualifiers = wizard.fabioQualifiersPerGroup * Math.max(2, Number(wizard.fabioGroupCount || 2));
+  $('#wizardFabioOverallSelection')?.addEventListener('change', () => {
+    wizard.fabioOverallSelection = $('#wizardFabioOverallSelection').value;
     renderWizard();
   });
+  $$('[data-fabio-size]').forEach((input) => input.addEventListener('change', () => {
+    const index = Number(input.dataset.fabioSize);
+    wizard.fabioGroupSizes[index] = Math.max(1, Number(input.value) || 1);
+    wizard.fabioQualifiersByGroup[index] = Math.min(wizard.fabioGroupSizes[index], Math.max(0, Number(wizard.fabioQualifiersByGroup[index]) || 0));
+    wizard.qualifiers = wizard.fabioQualifiersByGroup.reduce((sum, value) => sum + value, 0);
+    renderWizard();
+  }));
+  $$('[data-fabio-qualifiers]').forEach((input) => input.addEventListener('change', () => {
+    const index = Number(input.dataset.fabioQualifiers);
+    wizard.fabioQualifiersByGroup[index] = Math.min(wizard.fabioGroupSizes[index], Math.max(0, Number(input.value) || 0));
+    wizard.qualifiers = wizard.fabioQualifiersByGroup.reduce((sum, value) => sum + value, 0);
+    renderWizard();
+  }));
+  $$('[data-fabio-direction]').forEach((input) => input.addEventListener('change', () => {
+    const index = Number(input.dataset.fabioDirection);
+    wizard.fabioSelectionByGroup[index] = input.value === 'worst' ? 'worst' : 'best';
+    renderWizard();
+  }));
 
   $$('[data-qualifier-quick]').forEach((button) => button.addEventListener('click', () => {
     wizard.qualifiers = Number(button.dataset.qualifierQuick);
@@ -1259,10 +1372,20 @@ function captureWizardFields() {
   if ($('#wizardDynamicBlockRounds')) wizard.dynamicBlockRounds = Math.max(1, Number($('#wizardDynamicBlockRounds').value) || 1);
   if ($('#wizardMiltonGames')) wizard.miltonGamesPerPlayer = Math.max(1, Number($('#wizardMiltonGames').value) || 1);
   if ($('#wizardFabioGroupCount')) wizard.fabioGroupCount = Math.max(2, Number($('#wizardFabioGroupCount').value) || 2);
-  if ($('#wizardFabioPlayersPerGroup')) wizard.fabioPlayersPerGroup = Math.max(2, Number($('#wizardFabioPlayersPerGroup').value) || 2);
-  if ($('#wizardFabioQualifiers')) {
-    wizard.fabioQualifiersPerGroup = Math.max(1, Number($('#wizardFabioQualifiers').value) || 1);
-    wizard.qualifiers = wizard.fabioQualifiersPerGroup * Math.max(2, Number(wizard.fabioGroupCount || 2));
+  if ($('#wizardFabioOverallQualifiers')) wizard.fabioOverallQualifiers = Math.max(2, Number($('#wizardFabioOverallQualifiers').value) || 2);
+  if ($('#wizardFabioOverallSelection')) wizard.fabioOverallSelection = $('#wizardFabioOverallSelection').value === 'worst' ? 'worst' : 'best';
+  const fabioSizeInputs = $$('[data-fabio-size]');
+  if (fabioSizeInputs.length) wizard.fabioGroupSizes = fabioSizeInputs.map((input) => Math.max(1, Number(input.value) || 1));
+  const fabioQualifierInputs = $$('[data-fabio-qualifiers]');
+  if (fabioQualifierInputs.length) wizard.fabioQualifiersByGroup = fabioQualifierInputs.map((input,index) => Math.min(wizard.fabioGroupSizes[index] || 1, Math.max(0, Number(input.value) || 0)));
+  const fabioDirectionInputs = $$('[data-fabio-direction]');
+  if (fabioDirectionInputs.length) wizard.fabioSelectionByGroup = fabioDirectionInputs.map((input) => input.value === 'worst' ? 'worst' : 'best');
+  if (wizard.format === 'fabio') {
+    wizard.fabioPlayersPerGroup = wizard.fabioGroupSizes?.every((size)=>size===wizard.fabioGroupSizes[0]) ? wizard.fabioGroupSizes[0] : 0;
+    wizard.fabioQualifiersPerGroup = wizard.fabioQualifiersByGroup?.every((value)=>value===wizard.fabioQualifiersByGroup[0]) ? wizard.fabioQualifiersByGroup[0] : 0;
+    wizard.qualifiers = wizard.fabioQualificationMode === 'overall'
+      ? Math.min(wizard.entrants.length, Math.max(2, Number(wizard.fabioOverallQualifiers) || 2))
+      : (wizard.fabioQualifiersByGroup || []).reduce((sum,value)=>sum+value,0);
   }
 }
 
@@ -1284,7 +1407,7 @@ function validateWizardStep(step) {
       if (wizard.entrants.length < 2) return 'Adicione pelo menos dois jogadores.';
       if (wizard.entrants.length > 30) return 'Esta versão aceita até 30 jogadores por campeonato.';
       if (wizard.format === 'milton' && (wizard.entrants.length < 4 || wizard.entrants.length % 2 !== 0)) return 'O Formato Milton exige um número par de jogadores e pelo menos quatro participantes.';
-      if (wizard.format === 'fabio' && wizard.entrants.length < 4) return 'A Liga Fábio exige pelo menos quatro jogadores e uma divisão exata em grupos com no mínimo dois jogadores.';
+      if (wizard.format === 'fabio' && wizard.entrants.length < 4) return 'A Liga Fábio exige pelo menos quatro jogadores.';
       if (wizard.mode === 'dynamic' && wizard.format === 'knockout') return 'Equipes rotativas precisam de uma fase de liga. Escolha Liga ou Liga + mata-mata.';
     }
   }
@@ -1304,13 +1427,25 @@ function validateWizardStep(step) {
     if (!['draw','seeded'].includes(wizard.knockoutPairing)) return 'Escolha sorteio livre ou melhor contra pior.';
   }
   if (step === 3 && wizard.format === 'fabio') {
-    const structure = resolveFabioStructure(wizard.entrants.length, wizard.fabioGroupCount, wizard.fabioPlayersPerGroup);
-    if (!structure.groupCount || structure.groupCount * structure.playersPerGroup !== wizard.entrants.length) return 'A quantidade de grupos multiplicada pelos jogadores por grupo precisa usar todos os participantes.';
-    wizard.fabioGroupCount = structure.groupCount;
-    wizard.fabioPlayersPerGroup = structure.playersPerGroup;
-    if (!Number.isInteger(wizard.fabioQualifiersPerGroup) || wizard.fabioQualifiersPerGroup < 1 || wizard.fabioQualifiersPerGroup > structure.playersPerGroup) return `Os classificados por grupo precisam ficar entre 1 e ${structure.playersPerGroup}.`;
-    wizard.qualifiers = wizard.fabioQualifiersPerGroup * structure.groupCount;
-    if (wizard.bracketMode === 'complete' && !isPowerOfTwo(wizard.qualifiers)) return 'Use Chave adaptada ou escolha uma quantidade que gere 2, 4, 8 ou 16 classificados no total.';
+    const sizes = (wizard.fabioGroupSizes || []).map(Number);
+    const quotas = (wizard.fabioQualifiersByGroup || []).map(Number);
+    if (!Number.isInteger(wizard.fabioGroupCount) || wizard.fabioGroupCount < 2 || wizard.fabioGroupCount > wizard.entrants.length) return `Escolha entre 2 e ${wizard.entrants.length} grupos.`;
+    if (sizes.length !== wizard.fabioGroupCount) return 'Configure o tamanho de todos os grupos.';
+    if (sizes.some((size) => !Number.isInteger(size) || size < 1)) return 'Cada grupo precisa ter pelo menos um jogador.';
+    const distributed = sizes.reduce((sum, value) => sum + value, 0);
+    if (distributed !== wizard.entrants.length) return `Os tamanhos dos grupos somam ${distributed}, mas existem ${wizard.entrants.length} jogadores. Ajuste até a soma ficar exata.`;
+    if (wizard.fabioQualificationMode === 'overall') {
+      if (!Number.isInteger(wizard.fabioOverallQualifiers) || wizard.fabioOverallQualifiers < 2 || wizard.fabioOverallQualifiers > wizard.entrants.length) return `Na tabela geral, os classificados precisam ficar entre 2 e ${wizard.entrants.length}.`;
+      wizard.qualifiers = wizard.fabioOverallQualifiers;
+    } else {
+      if (quotas.length !== wizard.fabioGroupCount) return 'Configure quantos classificam em todos os grupos.';
+      for (let index = 0; index < sizes.length; index += 1) {
+        if (!Number.isInteger(quotas[index]) || quotas[index] < 0 || quotas[index] > sizes[index]) return `No Grupo ${fabioGroupKey(index)}, os classificados precisam ficar entre 0 e ${sizes[index]}.`;
+      }
+      wizard.qualifiers = quotas.reduce((sum, value) => sum + value, 0);
+      if (wizard.qualifiers < 2) return 'A soma das cotas precisa classificar pelo menos dois jogadores.';
+    }
+    if (wizard.bracketMode === 'complete' && !isPowerOfTwo(wizard.qualifiers)) return 'Use Chave adaptada ou ajuste os classificados para gerar 2, 4, 8 ou 16 participantes no total.';
     if (!['draw','crossed'].includes(wizard.fabioGroupPairing)) return 'Escolha sorteio livre ou cruzamento entre grupos.';
   }
   if (step === 3 && wizard.format === 'mixed') {
@@ -1335,14 +1470,14 @@ function buildTournamentFromWizard() {
       });
 
   const hybrid = isHybridFormat(wizard.format);
-  const qualifiers = wizard.format === 'fabio' ? wizard.fabioQualifiersPerGroup * wizard.fabioGroupCount : (hybrid ? wizard.qualifiers : null);
+  const qualifiers = wizard.format === 'fabio' ? (wizard.fabioQualifiersByGroup || []).reduce((sum,value)=>sum+Number(value||0),0) : (hybrid ? wizard.qualifiers : null);
   const pairing = wizard.format === 'fabio'
     ? (wizard.fabioGroupPairing === 'draw' ? 'draw' : 'crossed')
     : (hybrid ? wizard.knockoutPairing : 'draw');
 
   const tournament = {
     id: uid(),
-    version: 13,
+    version: 14,
     coverImageUrl: '',
     themeColor: normalizeHexColor(wizard.themeColor, defaultThemeColor(profile.id)),
     name: wizard.name,
@@ -1366,9 +1501,15 @@ function buildTournamentFromWizard() {
       dynamicBlockRounds: wizard.mode === 'dynamic' ? wizard.dynamicBlockRounds : 1,
       miltonGamesPerPlayer: wizard.format === 'milton' ? wizard.miltonGamesPerPlayer : 0,
       fabioGroupCount: wizard.format === 'fabio' ? wizard.fabioGroupCount : 0,
-      fabioPlayersPerGroup: wizard.format === 'fabio' ? wizard.fabioPlayersPerGroup : 0,
-      fabioQualifiersPerGroup: wizard.format === 'fabio' ? wizard.fabioQualifiersPerGroup : 0,
+      fabioGroupSizes: wizard.format === 'fabio' ? [...(wizard.fabioGroupSizes || [])] : [],
+      fabioQualifiersByGroup: wizard.format === 'fabio' ? [...(wizard.fabioQualifiersByGroup || [])] : [],
+      fabioPlayersPerGroup: wizard.format === 'fabio' && wizard.fabioGroupSizes?.every((size)=>size===wizard.fabioGroupSizes[0]) ? wizard.fabioGroupSizes[0] : 0,
+      fabioQualifiersPerGroup: wizard.format === 'fabio' && wizard.fabioQualifiersByGroup?.every((value)=>value===wizard.fabioQualifiersByGroup[0]) ? wizard.fabioQualifiersByGroup[0] : 0,
       fabioGroupPairing: wizard.format === 'fabio' ? wizard.fabioGroupPairing : '',
+      fabioQualificationMode: wizard.format === 'fabio' ? wizard.fabioQualificationMode : 'per_group',
+      fabioSelectionByGroup: wizard.format === 'fabio' ? [...(wizard.fabioSelectionByGroup || [])] : [],
+      fabioOverallQualifiers: wizard.format === 'fabio' ? wizard.fabioOverallQualifiers : 0,
+      fabioOverallSelection: wizard.format === 'fabio' ? wizard.fabioOverallSelection : 'best',
       groupAssignments: {},
       knockoutUnit: wizard.mode === 'dynamic' ? 'individual' : wizard.mode
     },
@@ -1776,16 +1917,20 @@ function createMiltonLeague(tournament) {
 
 function createFabioGroupLeague(tournament) {
   const ids = shuffle(tournament.participants.map((participant) => participant.id));
-  const structure = resolveFabioStructure(ids.length, tournament.settings.fabioGroupCount, tournament.settings.fabioPlayersPerGroup);
-  if (!structure.groupCount || structure.groupCount * structure.playersPerGroup !== ids.length) {
-    throw new Error('A Liga Fábio precisa dividir todos os jogadores igualmente entre os grupos.');
+  const sizes = (tournament.settings.fabioGroupSizes || []).map((value) => Math.max(1, Number(value) || 1));
+  const count = Math.max(2, Number(tournament.settings.fabioGroupCount || sizes.length || 2));
+  if (sizes.length !== count || sizes.reduce((sum, value) => sum + value, 0) !== ids.length) {
+    throw new Error(`A distribuição dos grupos precisa somar exatamente ${ids.length} jogadores.`);
   }
-  tournament.settings.fabioGroupCount = structure.groupCount;
-  tournament.settings.fabioPlayersPerGroup = structure.playersPerGroup;
+  tournament.settings.fabioGroupCount = count;
+  tournament.settings.fabioGroupSizes = sizes;
   tournament.settings.groupAssignments = {};
   const allMatches = [];
-  structure.groupKeys.forEach((groupKey, index) => {
-    const groupIds = ids.slice(index * structure.playersPerGroup, (index + 1) * structure.playersPerGroup);
+  let cursor = 0;
+  sizes.forEach((size, index) => {
+    const groupKey = fabioGroupKey(index);
+    const groupIds = ids.slice(cursor, cursor + size);
+    cursor += size;
     groupIds.forEach((id) => { tournament.settings.groupAssignments[id] = groupKey; });
     const groupMatches = createRoundRobin(groupIds, tournament.settings.leagueLegs, tournament).map((match) => ({
       ...match,
@@ -2021,19 +2166,59 @@ function updateLeagueChampion(tournament) {
 }
 
 
-function fabioQualifiedEntries(tournament) {
-  const perGroup = Math.max(1, Number(tournament.settings.fabioQualifiersPerGroup || 1));
+function fabioGlobalComparison(a, b) {
+  const safe = (value) => Number.isFinite(value) ? value : 0;
+  const metrics = (entry) => {
+    const row = entry.row || entry;
+    const games = Math.max(1, Number(row.pj || 0));
+    return {
+      ppg: safe(Number(row.pts || 0) / games),
+      winRate: safe(Number(row.v || 0) / games),
+      sgpg: safe(Number(row.sg || 0) / games),
+      gppg: safe(Number(row.gp || 0) / games),
+      points: Number(row.pts || 0),
+      wins: Number(row.v || 0)
+    };
+  };
+  const ma = metrics(a), mb = metrics(b);
+  return mb.ppg - ma.ppg || mb.winRate - ma.winRate || mb.sgpg - ma.sgpg || mb.gppg - ma.gppg || mb.points - ma.points || mb.wins - ma.wins || String(a.id).localeCompare(String(b.id));
+}
+
+function fabioAllEntries(tournament) {
   const groups = fabioStandings(tournament);
-  const keys = fabioGroupKeysForTournament(tournament);
   const entries = [];
-  for (let rank = 0; rank < perGroup; rank += 1) {
-    for (const groupKey of keys) {
-      const row = groups[groupKey]?.[rank];
-      if (!row) throw new Error(`O Grupo ${groupKey} não possui classificados suficientes.`);
-      entries.push({ id: row.id, groupKey, rank: rank + 1 });
-    }
+  for (const groupKey of fabioGroupKeysForTournament(tournament)) {
+    (groups[groupKey] || []).forEach((row, index) => entries.push({ id: row.id, groupKey, rank: index + 1, row }));
   }
   return entries;
+}
+
+function fabioQualifiedEntries(tournament) {
+  const mode = tournament.settings.fabioQualificationMode === 'overall' ? 'overall' : 'per_group';
+  const allEntries = fabioAllEntries(tournament);
+  if (mode === 'overall') {
+    const count = Math.min(allEntries.length, Math.max(2, Number(tournament.settings.fabioOverallQualifiers || tournament.settings.qualifiers || 2)));
+    const sorted = [...allEntries].sort(fabioGlobalComparison);
+    if (tournament.settings.fabioOverallSelection === 'worst') sorted.reverse();
+    return sorted.slice(0, count).sort(fabioGlobalComparison);
+  }
+
+  const groups = fabioStandings(tournament);
+  const keys = fabioGroupKeysForTournament(tournament);
+  const quotas = tournament.settings.fabioQualifiersByGroup || [];
+  const directions = tournament.settings.fabioSelectionByGroup || [];
+  const entries = [];
+  keys.forEach((groupKey, index) => {
+    const rows = [...(groups[groupKey] || [])];
+    const quota = Math.min(rows.length, Math.max(0, Number(quotas[index] ?? tournament.settings.fabioQualifiersPerGroup ?? 1)));
+    if (directions[index] === 'worst') rows.reverse();
+    rows.slice(0, quota).forEach((row) => entries.push({ id: row.id, groupKey, rank: (groups[groupKey] || []).findIndex((item) => item.id === row.id) + 1, row }));
+  });
+  if (entries.length < 2) throw new Error('A configuração precisa gerar pelo menos dois classificados.');
+  // Esta ordem global é usada para decidir as folgas. Portanto, com três grupos e
+  // seis classificados, as duas folgas vão para as duas melhores campanhas gerais,
+  // e não automaticamente para 1º e 2º de um mesmo grupo.
+  return entries.sort(fabioGlobalComparison);
 }
 
 function pairFabioCrossGroupEntries(entries) {
@@ -2053,11 +2238,12 @@ function pairFabioCrossGroupEntries(entries) {
 }
 
 function beginFabioCrossedKnockout(tournament, entries) {
-  const total = entries.length;
+  const ordered = [...entries].sort(fabioGlobalComparison);
+  const total = ordered.length;
   if (total < 2) throw new Error('O mata-mata precisa de pelo menos dois classificados.');
   const plan = getBracketPlan(total);
-  const byeEntries = plan.byes ? entries.slice(0, plan.byes) : [];
-  const playEntries = plan.byes ? entries.slice(plan.byes) : entries;
+  const byeEntries = plan.byes ? ordered.slice(0, plan.byes) : [];
+  const playEntries = plan.byes ? ordered.slice(plan.byes) : ordered;
   const pairs = pairFabioCrossGroupEntries(playEntries);
   const roundName = plan.preliminaryMatches > 0 ? 'Rodada preliminar' : knockoutRoundName(total);
   tournament.knockoutState = {
@@ -2066,7 +2252,8 @@ function beginFabioCrossedKnockout(tournament, entries) {
     pendingByes: byeEntries.map((entry) => entry.id),
     initialByes: byeEntries.map((entry) => entry.id),
     pairing: 'crossed',
-    seeded: true
+    seeded: true,
+    globalSeedOrder: ordered.map((entry) => entry.id)
   };
   tournament.matches.push(...pairs.map(([homeId, awayId]) => createMatch(tournament, {
     stage: 'knockout', round: 1, bracketRound: 1, roundName, homeId, awayId
@@ -2219,21 +2406,25 @@ function focusMatchForTournament(tournament) {
   return playable.find((match) => !match.played) || [...playable].reverse().find((match) => match.played) || playable[0] || null;
 }
 
-function compactStandingsRowsHtml(tournament, rows, qualifiers = 0) {
-  return rows.map((row, index) => `<div class="compact-standing-row ${qualifiers && index < qualifiers ? 'qualified' : ''}">
-    <span class="compact-rank">${index + 1}</span>
-    ${avatarHtml(participantName(tournament,row.id), imageUrlForParticipant(tournament,row.id), 'tiny')}
-    <strong>${escapeHtml(participantName(tournament,row.id))}</strong>
-    <span>${row.pts} pts</span>
-  </div>`).join('');
+function compactStandingsRowsHtml(tournament, rows, qualifiers = 0, direction = 'best') {
+  return rows.map((row, index) => {
+    const qualified = qualifiers > 0 && (direction === 'worst' ? index >= rows.length - qualifiers : index < qualifiers);
+    return `<div class="compact-standing-row ${qualified ? 'qualified' : ''}">
+      <span class="compact-rank">${index + 1}</span>
+      ${avatarHtml(participantName(tournament,row.id), imageUrlForParticipant(tournament,row.id), 'tiny')}
+      <strong>${escapeHtml(participantName(tournament,row.id))}</strong>
+      <span>${row.pts} pts</span>
+    </div>`;
+  }).join('');
 }
 
 function compactStandingsHtml(tournament, limit = 8) {
   if (tournament.format === 'fabio') {
-    const perGroup = Number(tournament.settings.fabioQualifiersPerGroup || 1);
     const groups = fabioStandings(tournament);
     const keys = fabioGroupKeysForTournament(tournament);
-    return `<div class="compact-fabio-groups">${keys.map((key)=>`<section><header>GRUPO ${key}</header>${compactStandingsRowsHtml(tournament,(groups[key] || []).slice(0,limit),perGroup)}</section>`).join('')}</div>`;
+    const overall = tournament.settings.fabioQualificationMode === 'overall';
+    const quotas = tournament.settings.fabioQualifiersByGroup || [];
+    return `<div class="compact-fabio-groups">${keys.map((key,index)=>`<section><header>GRUPO ${key}</header>${compactStandingsRowsHtml(tournament,(groups[key] || []).slice(0,limit),overall ? 0 : Number(quotas[index] || 0),tournament.settings.fabioSelectionByGroup?.[index] || 'best')}</section>`).join('')}</div>${overall ? '<div class="notice info compact-overall-note">A classificação será definida pela tabela geral entre todos os grupos.</div>' : ''}`;
   }
   const rows = standings(tournament).slice(0, limit);
   const qualifiers = isHybridFormat(tournament.format) ? Number(tournament.settings.qualifiers || 0) : 0;
@@ -2342,25 +2533,42 @@ function matchRowHtml(tournament, match, index) {
   </div>`;
 }
 
-function standingsTableRowsHtml(tournament, rows, qualifiers = 0) {
-  return rows.map((row,index) => `<tr class="${qualifiers && index < qualifiers ? 'qualified' : ''} ${qualifiers && index === qualifiers - 1 ? 'cut-line' : ''}">
-    <td class="rank"><span>${index + 1}</span></td>
-    <td><span class="table-player-identity">${avatarHtml(participantName(tournament,row.id),imageUrlForParticipant(tournament,row.id),'tiny')}<strong>${escapeHtml(participantName(tournament,row.id))}</strong></span></td>
-    <td class="num">${row.pj}</td><td class="num win-cell">${row.v}</td><td class="num">${row.e}</td><td class="num loss-cell">${row.d}</td><td class="num">${row.gp}</td><td class="num">${row.gc}</td><td class="num">${row.sg}</td><td class="num points-cell"><strong>${row.pts}</strong></td>
-  </tr>`).join('');
+function standingsTableRowsHtml(tournament, rows, qualifiers = 0, direction = 'best') {
+  return rows.map((row,index) => {
+    const qualified = qualifiers > 0 && (direction === 'worst' ? index >= rows.length - qualifiers : index < qualifiers);
+    const cut = qualifiers > 0 && (direction === 'worst' ? index === rows.length - qualifiers : index === qualifiers - 1);
+    return `<tr class="${qualified ? 'qualified' : ''} ${cut ? 'cut-line' : ''}">
+      <td class="rank"><span>${index + 1}</span></td>
+      <td><span class="table-player-identity">${avatarHtml(participantName(tournament,row.id),imageUrlForParticipant(tournament,row.id),'tiny')}<strong>${escapeHtml(participantName(tournament,row.id))}</strong></span></td>
+      <td class="num">${row.pj}</td><td class="num win-cell">${row.v}</td><td class="num">${row.e}</td><td class="num loss-cell">${row.d}</td><td class="num">${row.gp}</td><td class="num">${row.gc}</td><td class="num">${row.sg}</td><td class="num points-cell"><strong>${row.pts}</strong></td>
+    </tr>`;
+  }).join('');
 }
 
-function standingsTablePanelHtml(tournament, title, rows, qualifiers, description = '') {
+function standingsTablePanelHtml(tournament, title, rows, qualifiers, description = '', direction = 'best') {
   const profile = getGameProfile(tournament);
-  return `<div class="panel standings-panel ${gameProfileClass(tournament)}" style="${themeStyle(tournament)}"><div class="panel-head standings-title"><div><span class="panel-kicker">TABELA DA COMPETIÇÃO</span><h3>${escapeHtml(title)}</h3><p>${escapeHtml(description)}</p></div><div class="legend"><span class="legend-qualified"></span> Zona de classificação</div></div><div class="table-wrap"><table class="stats-table standings-table"><thead><tr><th>#</th><th>Participante</th><th class="num">J</th><th class="num">V</th><th class="num">E</th><th class="num">D</th><th class="num">${profile.scoreShort}+</th><th class="num">${profile.scoreShort}-</th><th class="num">SALDO</th><th class="num">PTS</th></tr></thead><tbody>${standingsTableRowsHtml(tournament,rows,qualifiers)}</tbody></table></div></div>`;
+  return `<div class="panel standings-panel ${gameProfileClass(tournament)}" style="${themeStyle(tournament)}"><div class="panel-head standings-title"><div><span class="panel-kicker">TABELA DA COMPETIÇÃO</span><h3>${escapeHtml(title)}</h3><p>${escapeHtml(description)}</p></div><div class="legend"><span class="legend-qualified"></span> Zona de classificação</div></div><div class="table-wrap"><table class="stats-table standings-table"><thead><tr><th>#</th><th>Participante</th><th class="num">J</th><th class="num">V</th><th class="num">E</th><th class="num">D</th><th class="num">${profile.scoreShort}+</th><th class="num">${profile.scoreShort}-</th><th class="num">SALDO</th><th class="num">PTS</th></tr></thead><tbody>${standingsTableRowsHtml(tournament,rows,qualifiers,direction)}</tbody></table></div></div>`;
+}
+
+
+function fabioGlobalStandingsPanelHtml(tournament) {
+  const entries = fabioAllEntries(tournament).sort(fabioGlobalComparison);
+  const reverse = tournament.settings.fabioOverallSelection === 'worst';
+  const rows = reverse ? [...entries].reverse() : entries;
+  const qualifiers = Math.min(rows.length, Number(tournament.settings.fabioOverallQualifiers || tournament.settings.qualifiers || 2));
+  return `<section class="panel fabio-global-table"><div class="panel-head"><div><span class="panel-kicker">CLASSIFICAÇÃO GERAL NORMALIZADA</span><h3>Todos os grupos</h3><p>Ordem por pontos por jogo, aproveitamento, saldo por jogo e produção por jogo.</p></div></div><div class="table-wrap"><table class="stats-table"><thead><tr><th>#</th><th>Jogador</th><th>Grupo</th><th class="num">J</th><th class="num">PTS/J</th><th class="num">APR.</th><th class="num">SG/J</th></tr></thead><tbody>${rows.map((entry,index)=>{const row=entry.row;const games=Math.max(1,row.pj||0);return `<tr class="${index<qualifiers?'qualified':''} ${index===qualifiers-1?'cut-line':''}"><td>${index+1}</td><td><strong>${escapeHtml(participantName(tournament,row.id))}</strong></td><td>Grupo ${escapeHtml(entry.groupKey)}</td><td class="num">${row.pj}</td><td class="num"><strong>${(row.pts/games).toFixed(2)}</strong></td><td class="num">${((row.v/games)*100).toFixed(1)}%</td><td class="num">${(row.sg/games).toFixed(2)}</td></tr>`;}).join('')}</tbody></table></div></section>`;
 }
 
 function standingsTabHtml(tournament) {
   if (tournament.format === 'fabio') {
     const groups = fabioStandings(tournament);
-    const qualifiers = Number(tournament.settings.fabioQualifiersPerGroup || 1);
     const keys = fabioGroupKeysForTournament(tournament);
-    return `<div class="fabio-standings-grid">${keys.map((key)=>standingsTablePanelHtml(tournament,`Grupo ${key}`,groups[key] || [],qualifiers,`Os ${qualifiers} primeiros avançam ao mata-mata.`)).join('')}</div>`;
+    const overall = tournament.settings.fabioQualificationMode === 'overall';
+    const quotas = tournament.settings.fabioQualifiersByGroup || [];
+    const directions = tournament.settings.fabioSelectionByGroup || [];
+    const groupPanels = keys.map((key,index) => standingsTablePanelHtml(tournament,`Grupo ${key}`,groups[key] || [],overall ? 0 : Number(quotas[index] || 0),overall ? 'A vaga será definida pela classificação geral.' : `${quotas[index] || 0} classificado(s): ${directions[index] === 'worst' ? 'piores' : 'melhores'} do grupo.`,directions[index] || 'best')).join('');
+    const globalPanel = overall ? fabioGlobalStandingsPanelHtml(tournament) : '';
+    return `<div class="fabio-standings-grid">${groupPanels}</div>${globalPanel}`;
   }
   const rows = standings(tournament);
   const qualifiers = isHybridFormat(tournament.format) ? tournament.settings.qualifiers : 0;
@@ -2996,9 +3204,9 @@ function settingsTabHtml(tournament) {
        <tr><td>Fase final</td><td class="num"><strong>1v1</strong></td></tr>`
     : tournament.format === 'fabio'
       ? `<tr><td>Quantidade de grupos</td><td class="num"><strong>${tournament.settings.fabioGroupCount}</strong></td></tr>
-         <tr><td>Jogadores por grupo</td><td class="num">${tournament.settings.fabioPlayersPerGroup}</td></tr>
-         <tr><td>Classificados por grupo</td><td class="num">${tournament.settings.fabioQualifiersPerGroup}</td></tr>
-         <tr><td>Cruzamento</td><td class="num">${tournament.settings.fabioGroupPairing === 'draw' ? 'Sorteio livre' : 'Entre grupos por classificação'}</td></tr>
+         <tr><td>Tamanho dos grupos</td><td class="num">${(tournament.settings.fabioGroupSizes || []).map((value,index)=>`Grupo ${fabioGroupKey(index)}: ${value}`).join(' · ')}</td></tr>
+         <tr><td>Classificação</td><td class="num">${tournament.settings.fabioQualificationMode === 'overall' ? `${tournament.settings.fabioOverallQualifiers} pela tabela geral (${tournament.settings.fabioOverallSelection === 'worst' ? 'piores' : 'melhores'})` : (tournament.settings.fabioQualifiersByGroup || []).map((value,index)=>`Grupo ${fabioGroupKey(index)}: ${value} ${tournament.settings.fabioSelectionByGroup?.[index] === 'worst' ? 'piores' : 'melhores'}`).join(' · ')}</td></tr>
+         <tr><td>Cruzamento</td><td class="num">${tournament.settings.fabioGroupPairing === 'draw' ? 'Sorteio livre' : 'Entre grupos com seed global'}</td></tr>
          <tr><td>Turnos por grupo</td><td class="num">${tournament.settings.leagueLegs}</td></tr>`
       : '';
   return `<div class="stack">
@@ -3623,8 +3831,24 @@ function openStructureEditModal(tournamentId) {
   if (!tournament) return;
   const max = tournament.participants.length;
   const validMilton = validMiltonGamesPerPlayer(max);
-  const fabioStructure = resolveFabioStructure(max, tournament.settings.fabioGroupCount, tournament.settings.fabioPlayersPerGroup);
-  const fabioPlayerOptions = fabioStructure.validGroups.map((groups) => max / groups).sort((a,b)=>b-a);
+  const draft = {
+    count: Math.min(max, Math.max(2, Number(tournament.settings.fabioGroupCount || tournament.settings.fabioGroupSizes?.length || 2))),
+    sizes: [...(tournament.settings.fabioGroupSizes || [])],
+    quotas: [...(tournament.settings.fabioQualifiersByGroup || [])],
+    directions: [...(tournament.settings.fabioSelectionByGroup || [])],
+    mode: tournament.settings.fabioQualificationMode === 'overall' ? 'overall' : 'per_group',
+    overallQualifiers: Math.min(max, Math.max(2, Number(tournament.settings.fabioOverallQualifiers || tournament.settings.qualifiers || 2))),
+    overallSelection: tournament.settings.fabioOverallSelection === 'worst' ? 'worst' : 'best'
+  };
+  const initializeDraft = () => {
+    const defaults = defaultFabioGroupSizes(max, draft.count);
+    draft.sizes = Array.from({ length: draft.count }, (_, index) => Math.max(1, Number(draft.sizes[index]) || defaults[index] || 1));
+    if (draft.sizes.reduce((sum,value)=>sum+value,0) !== max) draft.sizes = defaults;
+    draft.quotas = draft.sizes.map((size,index)=>Math.min(size,Math.max(0,Number(draft.quotas[index] ?? Math.min(4,size)))));
+    draft.directions = draft.sizes.map((_,index)=>draft.directions[index] === 'worst' ? 'worst' : 'best');
+  };
+  initializeDraft();
+
   openModal(`<div class="modal-head"><div><div class="eyebrow">RECONFIGURAR CAMPEONATO</div><h2>Recriar estrutura</h2></div><button class="icon-button" data-close>×</button></div>
     <form id="structureEditForm"><div class="modal-body stack"><div class="notice danger"><strong>Atenção:</strong> esta ação apaga todos os resultados, estatísticas, chave e campeão, mantendo os jogadores e as imagens.</div>
       <div class="grid cols-2"><label class="field"><span>Formato</span><select id="structureFormat">
@@ -3636,23 +3860,36 @@ function openStructureEditModal(tournamentId) {
       </select></label><label class="field"><span>Turnos da liga/grupos</span><select id="structureLegs"><option value="1" ${tournament.settings.leagueLegs === 1 ? 'selected' : ''}>Turno único</option><option value="2" ${tournament.settings.leagueLegs === 2 ? 'selected' : ''}>Ida e volta</option></select></label></div>
       <div class="grid cols-2"><label class="field"><span>Classificados ao mata-mata</span><input id="structureQualifiers" type="number" min="2" max="${max}" value="${Math.min(max, Number(tournament.settings.qualifiers || Math.min(8,max)))}"></label><label class="field"><span>Cruzamento padrão</span><select id="structurePairing"><option value="seeded" ${tournament.settings.knockoutPairing === 'seeded' ? 'selected' : ''}>Melhor contra pior</option><option value="draw" ${tournament.settings.knockoutPairing === 'draw' ? 'selected' : ''}>Sorteio livre</option></select></label></div>
       <label class="field"><span>Formato Milton · jogos por jogador</span><select id="structureMiltonGames">${validMilton.map((value)=>`<option value="${value}" ${Number(tournament.settings.miltonGamesPerPlayer)===value?'selected':''}>${value} jogos</option>`).join('')}</select></label>
-      <div class="grid cols-3"><label class="field"><span>Liga Fábio · quantidade de grupos</span><select id="structureFabioGroupCount">${fabioStructure.validGroups.map((value)=>`<option value="${value}" ${fabioStructure.groupCount===value?'selected':''}>${value} grupos</option>`).join('')}</select></label><label class="field"><span>Jogadores por grupo</span><select id="structureFabioPlayersPerGroup">${fabioPlayerOptions.map((value)=>`<option value="${value}" ${fabioStructure.playersPerGroup===value?'selected':''}>${value} jogadores</option>`).join('')}</select></label><label class="field"><span>Classificados por grupo</span><input id="structureFabioQualifiers" type="number" min="1" max="${Math.max(1,fabioStructure.playersPerGroup)}" value="${Math.min(Math.max(1,fabioStructure.playersPerGroup),Number(tournament.settings.fabioQualifiersPerGroup || Math.min(4,fabioStructure.playersPerGroup)))}"></label></div>
-      <label class="field"><span>Liga Fábio · entrada no mata-mata</span><select id="structureFabioPairing"><option value="crossed" ${tournament.settings.fabioGroupPairing !== 'draw' ? 'selected' : ''}>Cruzamento entre grupos por classificação</option><option value="draw" ${tournament.settings.fabioGroupPairing === 'draw' ? 'selected' : ''}>Sorteio livre</option></select></label>
+      <section class="rule-section fabio-structure-editor" id="structureFabioPanel">
+        <div class="rule-section-head"><div><span class="section-number">F</span><div><h3>Liga Fábio</h3><p>Grupos desiguais, cotas próprias ou classificação geral.</p></div></div></div>
+        <div class="grid cols-3"><label class="field"><span>Quantidade de grupos</span><input id="structureFabioGroupCount" type="number" min="2" max="${max}" value="${draft.count}"></label><label class="field"><span>Regra de classificação</span><select id="structureFabioQualificationMode"><option value="per_group" ${draft.mode==='per_group'?'selected':''}>Cotas por grupo</option><option value="overall" ${draft.mode==='overall'?'selected':''}>Tabela geral</option></select></label><label class="field"><span>Entrada no mata-mata</span><select id="structureFabioPairing"><option value="crossed" ${tournament.settings.fabioGroupPairing !== 'draw' ? 'selected' : ''}>Cruzamento entre grupos</option><option value="draw" ${tournament.settings.fabioGroupPairing === 'draw' ? 'selected' : ''}>Sorteio livre</option></select></label></div>
+        <div id="structureFabioDynamic"></div>
+      </section>
       <label class="check-row"><input id="structureThird" type="checkbox" ${tournament.settings.thirdPlace ? 'checked' : ''}> Criar disputa de terceiro lugar</label>
     </div><div class="modal-foot"><button type="button" class="button ghost" data-close>Cancelar</button><button class="button danger" type="submit">Apagar resultados e recriar</button></div></form>`, 'wide');
+
+  const renderFabioDraft = () => {
+    const used = draft.sizes.reduce((sum,value)=>sum+value,0);
+    const rows = draft.sizes.map((size,index)=>`<div class="fabio-group-config-row" data-structure-fabio-row="${index}"><div class="fabio-group-name"><span>GRUPO</span><strong>${fabioGroupKey(index)}</strong></div><label class="field"><span>Jogadores</span><input data-structure-fabio-size="${index}" type="number" min="1" max="${max}" value="${size}"></label>${draft.mode==='per_group'?`<label class="field"><span>Classificados</span><input data-structure-fabio-quota="${index}" type="number" min="0" max="${size}" value="${draft.quotas[index]}"></label><label class="field"><span>Quem avança</span><select data-structure-fabio-direction="${index}"><option value="best" ${draft.directions[index]==='best'?'selected':''}>Melhores</option><option value="worst" ${draft.directions[index]==='worst'?'selected':''}>Piores</option></select></label>`:'<div class="fabio-global-note">Usa tabela geral</div>'}</div>`).join('');
+    $('#structureFabioDynamic').innerHTML = `${draft.mode==='overall'?`<div class="grid cols-2"><label class="field"><span>Total de classificados</span><input id="structureFabioOverallQualifiers" type="number" min="2" max="${max}" value="${draft.overallQualifiers}"></label><label class="field"><span>Quem avança</span><select id="structureFabioOverallSelection"><option value="best" ${draft.overallSelection==='best'?'selected':''}>Melhores campanhas gerais</option><option value="worst" ${draft.overallSelection==='worst'?'selected':''}>Piores campanhas gerais</option></select></label></div>`:''}<div class="fabio-total-box ${used===max?'valid':'invalid'}"><span>JOGADORES DISTRIBUÍDOS</span><strong>${used}/${max}</strong><small>A soma dos grupos precisa ser exatamente ${max}.</small></div><div class="fabio-group-config-list">${rows}</div>`;
+    $$('[data-structure-fabio-size]').forEach((input)=>input.addEventListener('change',()=>{const i=Number(input.dataset.structureFabioSize);draft.sizes[i]=Math.max(1,Number(input.value)||1);draft.quotas[i]=Math.min(draft.sizes[i],draft.quotas[i]||0);renderFabioDraft();}));
+    $$('[data-structure-fabio-quota]').forEach((input)=>input.addEventListener('change',()=>{const i=Number(input.dataset.structureFabioQuota);draft.quotas[i]=Math.min(draft.sizes[i],Math.max(0,Number(input.value)||0));renderFabioDraft();}));
+    $$('[data-structure-fabio-direction]').forEach((input)=>input.addEventListener('change',()=>{draft.directions[Number(input.dataset.structureFabioDirection)]=input.value==='worst'?'worst':'best';}));
+    $('#structureFabioOverallQualifiers')?.addEventListener('change',()=>{draft.overallQualifiers=Math.min(max,Math.max(2,Number($('#structureFabioOverallQualifiers').value)||2));});
+    $('#structureFabioOverallSelection')?.addEventListener('change',()=>{draft.overallSelection=$('#structureFabioOverallSelection').value==='worst'?'worst':'best';});
+  };
+  renderFabioDraft();
   $$('[data-close]').forEach((button) => button.addEventListener('click', closeModal));
-  $('#structureFabioGroupCount')?.addEventListener('change', () => {
-    const structure = resolveFabioStructure(max, Number($('#structureFabioGroupCount').value), 0);
-    $('#structureFabioPlayersPerGroup').value = String(structure.playersPerGroup);
-    $('#structureFabioQualifiers').max = String(structure.playersPerGroup);
-    if (Number($('#structureFabioQualifiers').value) > structure.playersPerGroup) $('#structureFabioQualifiers').value = String(structure.playersPerGroup);
+  $('#structureFabioGroupCount').addEventListener('change',()=>{
+    draft.count=Math.min(max,Math.max(2,Number($('#structureFabioGroupCount').value)||2));
+    const defaults=defaultFabioGroupSizes(max,draft.count);
+    draft.sizes=defaults;
+    draft.quotas=defaults.map((size,index)=>Math.min(size,draft.quotas[index] ?? Math.min(4,size)));
+    draft.directions=defaults.map((_,index)=>draft.directions[index]==='worst'?'worst':'best');
+    renderFabioDraft();
   });
-  $('#structureFabioPlayersPerGroup')?.addEventListener('change', () => {
-    const structure = resolveFabioStructure(max, 0, Number($('#structureFabioPlayersPerGroup').value));
-    $('#structureFabioGroupCount').value = String(structure.groupCount);
-    $('#structureFabioQualifiers').max = String(structure.playersPerGroup);
-    if (Number($('#structureFabioQualifiers').value) > structure.playersPerGroup) $('#structureFabioQualifiers').value = String(structure.playersPerGroup);
-  });
+  $('#structureFabioQualificationMode').addEventListener('change',()=>{draft.mode=$('#structureFabioQualificationMode').value==='overall'?'overall':'per_group';renderFabioDraft();});
+
   $('#structureEditForm').addEventListener('submit', async (event) => {
     event.preventDefault();
     if (!confirm('Confirma a exclusão de todos os resultados para recriar o campeonato?')) return;
@@ -3660,33 +3897,36 @@ function openStructureEditModal(tournamentId) {
       const format = $('#structureFormat').value;
       let qualifiers = Number($('#structureQualifiers').value);
       const miltonGames = Number($('#structureMiltonGames').value);
-      const fabioGroupCount = Number($('#structureFabioGroupCount').value);
-      const fabioPlayersPerGroup = Number($('#structureFabioPlayersPerGroup').value);
-      const fabioPerGroup = Number($('#structureFabioQualifiers').value);
-      const nextFabioStructure = resolveFabioStructure(max, fabioGroupCount, fabioPlayersPerGroup);
       if (format === 'milton') {
         if (max < 4 || max % 2 !== 0) throw new Error('O Formato Milton exige número par de jogadores e pelo menos quatro participantes.');
         if (!validMilton.includes(miltonGames)) throw new Error('Escolha uma quantidade válida de jogos por jogador.');
         if (qualifiers < 2 || qualifiers > max) throw new Error(`Os classificados precisam ficar entre 2 e ${max}.`);
         tournament.mode = 'dynamic';
       } else if (format === 'fabio') {
-        if (max < 4) throw new Error('A Liga Fábio exige pelo menos quatro jogadores.');
-        if (!nextFabioStructure.groupCount || nextFabioStructure.groupCount * nextFabioStructure.playersPerGroup !== max) throw new Error('Escolha uma divisão exata que utilize todos os jogadores.');
-        if (fabioPerGroup < 1 || fabioPerGroup > nextFabioStructure.playersPerGroup) throw new Error(`Os classificados por grupo precisam ficar entre 1 e ${nextFabioStructure.playersPerGroup}.`);
-        qualifiers = fabioPerGroup * nextFabioStructure.groupCount;
-        tournament.mode = 'individual';
-      } else if (format === 'knockout' && tournament.mode === 'dynamic') {
-        tournament.mode = 'individual';
-      }
+        if (draft.sizes.length !== draft.count || draft.sizes.reduce((sum,value)=>sum+value,0)!==max) throw new Error(`Os tamanhos dos grupos precisam somar exatamente ${max}.`);
+        if (draft.mode === 'overall') qualifiers=draft.overallQualifiers;
+        else {
+          if (draft.quotas.some((value,index)=>value<0||value>draft.sizes[index])) throw new Error('Revise os classificados de cada grupo.');
+          qualifiers=draft.quotas.reduce((sum,value)=>sum+value,0);
+        }
+        if (qualifiers<2) throw new Error('Pelo menos dois jogadores precisam avançar.');
+        tournament.mode='individual';
+      } else if (format === 'knockout' && tournament.mode === 'dynamic') tournament.mode='individual';
       if (format === 'mixed' && (qualifiers < 2 || qualifiers > max)) throw new Error(`Os classificados precisam ficar entre 2 e ${max}.`);
       tournament.format = format;
       tournament.settings.leagueLegs = Number($('#structureLegs').value);
       tournament.settings.qualifiers = isHybridFormat(format) ? qualifiers : null;
       tournament.settings.knockoutPairing = format === 'fabio' ? ($('#structureFabioPairing').value === 'draw' ? 'draw' : 'crossed') : $('#structurePairing').value;
       tournament.settings.fabioGroupPairing = $('#structureFabioPairing').value;
-      tournament.settings.fabioGroupCount = nextFabioStructure.groupCount;
-      tournament.settings.fabioPlayersPerGroup = nextFabioStructure.playersPerGroup;
-      tournament.settings.fabioQualifiersPerGroup = fabioPerGroup;
+      tournament.settings.fabioGroupCount = draft.count;
+      tournament.settings.fabioGroupSizes = [...draft.sizes];
+      tournament.settings.fabioQualifiersByGroup = [...draft.quotas];
+      tournament.settings.fabioSelectionByGroup = [...draft.directions];
+      tournament.settings.fabioQualificationMode = draft.mode;
+      tournament.settings.fabioOverallQualifiers = draft.overallQualifiers;
+      tournament.settings.fabioOverallSelection = draft.overallSelection;
+      tournament.settings.fabioPlayersPerGroup = draft.sizes.every((value)=>value===draft.sizes[0])?draft.sizes[0]:0;
+      tournament.settings.fabioQualifiersPerGroup = draft.quotas.every((value)=>value===draft.quotas[0])?draft.quotas[0]:0;
       tournament.settings.miltonGamesPerPlayer = miltonGames;
       tournament.settings.dynamicTeamSize = format === 'milton' ? 2 : tournament.settings.dynamicTeamSize;
       tournament.settings.dynamicFormation = format === 'milton' ? 'milton' : tournament.settings.dynamicFormation;
@@ -3890,13 +4130,13 @@ centerMatchListHtml = function(tournament, selectedId) {
   }).join('');
 }
 
-function liveStandingsTableHtml(tournament, rows, qualifiers, title = '') {
+function liveStandingsTableHtml(tournament, rows, qualifiers, title = '', direction = 'best') {
   return `<div class="live-table-wrap ${title ? 'group-live-table' : ''}">
     ${title ? `<div class="live-group-title">${escapeHtml(title)}</div>` : ''}
     <div class="live-table-head"><span>#</span><span>PARTICIPANTE</span><span>J</span><span>V</span><span>E</span><span>D</span><span>SG</span><span>PTS</span></div>
     <div class="live-table-body">${rows.map((row, index) => {
-      const qualified = qualifiers && index < qualifiers;
-      const cut = qualifiers && index === qualifiers - 1;
+      const qualified = qualifiers > 0 && (direction === 'worst' ? index >= rows.length - qualifiers : index < qualifiers);
+      const cut = qualifiers > 0 && (direction === 'worst' ? index === rows.length - qualifiers : index === qualifiers - 1);
       return `<div class="live-table-row ${qualified ? 'qualified' : ''} ${cut ? 'qualification-cut' : ''}">
         <span class="live-rank">${index + 1}</span>
         <span class="live-player">${avatarHtml(participantName(tournament,row.id), imageUrlForParticipant(tournament,row.id), 'tiny')}<b>${escapeHtml(participantName(tournament,row.id))}</b>${qualified ? '<em>CLASS.</em>' : ''}</span>
@@ -3909,10 +4149,11 @@ function liveStandingsTableHtml(tournament, rows, qualifiers, title = '') {
 function liveStandingsHtml(tournament) {
   const profile = getGameProfile(tournament);
   if (tournament.format === 'fabio') {
-    const perGroup = Number(tournament.settings.fabioQualifiersPerGroup || 1);
     const groups = fabioStandings(tournament);
     const keys = fabioGroupKeysForTournament(tournament);
-    return `<div class="live-fabio-groups">${keys.map((key)=>liveStandingsTableHtml(tournament,groups[key] || [],perGroup,`GRUPO ${key}`)).join('')}<div class="live-table-legend"><span>${profile.scoreLabel} registrados nos ${keys.length} grupos</span><b>${perGroup} de cada grupo avançam</b></div></div>`;
+    const overall = tournament.settings.fabioQualificationMode === 'overall';
+    const quotas = tournament.settings.fabioQualifiersByGroup || [];
+    return `<div class="live-fabio-groups">${keys.map((key,index)=>liveStandingsTableHtml(tournament,groups[key] || [],overall ? 0 : Number(quotas[index] || 0),`GRUPO ${key}`,tournament.settings.fabioSelectionByGroup?.[index] || 'best')).join('')}<div class="live-table-legend"><span>${profile.scoreLabel} registrados nos ${keys.length} grupos</span><b>${overall ? `${tournament.settings.fabioOverallQualifiers} melhores da tabela geral avançam` : `Cotas configuradas por grupo`}</b></div></div>`;
   }
   const rows = standings(tournament);
   const qualifiers = isHybridFormat(tournament.format) ? Math.max(0, Number(tournament.settings?.qualifiers || 0)) : 0;

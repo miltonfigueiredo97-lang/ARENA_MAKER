@@ -1731,3 +1731,35 @@ body.celebrating-champion { overflow:hidden !important; }
 .fabio-groups-preview.dynamic span { color:var(--game-accent); font-size:.5rem; letter-spacing:.08em; }
 .fabio-groups-preview.dynamic strong { color:#fff; font-size:.66rem; }
 .compact-fabio-groups,.fabio-standings-grid,.live-fabio-groups { grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); }
+
+/* V12.3 — Liga Fábio com grupos, cotas e classificação totalmente livres */
+.fabio-qualification-box { display:grid; gap:14px; padding:16px; border:1px solid color-mix(in srgb,var(--game-accent) 34%,var(--line)); background:linear-gradient(145deg,var(--game-soft),rgba(7,11,17,.88)); }
+.section-mini-title { display:grid; gap:4px; }
+.section-mini-title span { color:var(--game-accent); font-size:.52rem; font-weight:900; letter-spacing:.11em; }
+.section-mini-title strong { color:#fff; font:800 1.05rem "Barlow Condensed",Inter,sans-serif; text-transform:uppercase; }
+.fabio-group-config-list { display:grid; gap:10px; }
+.fabio-group-config-row { display:grid; grid-template-columns:86px minmax(150px,1fr) minmax(150px,1fr) minmax(170px,1fr) minmax(150px,.8fr); align-items:end; gap:10px; padding:12px; border:1px solid var(--line); background:#080d14; }
+.fabio-group-name { min-height:70px; display:grid; place-items:center; align-content:center; border:1px solid color-mix(in srgb,var(--game-accent) 35%,var(--line)); background:var(--game-soft); }
+.fabio-group-name span,.fabio-group-matches span { color:var(--game-accent); font-size:.45rem; font-weight:900; letter-spacing:.1em; }
+.fabio-group-name strong { color:#fff; font:900 1.5rem "Barlow Condensed",Inter,sans-serif; }
+.fabio-group-matches { min-height:70px; display:grid; align-content:center; gap:3px; padding:10px; border:1px solid var(--line); background:#070b11; text-align:center; }
+.fabio-group-matches strong { color:#fff; font-size:1.1rem; }
+.fabio-group-matches small { color:var(--muted); font-size:.48rem; }
+.fabio-total-box { display:grid; align-content:center; gap:4px; min-height:76px; padding:11px; border:1px solid var(--line); background:#080d14; }
+.fabio-total-box span { color:var(--muted); font-size:.48rem; font-weight:800; letter-spacing:.08em; }
+.fabio-total-box strong { color:#fff; font:900 1.25rem "Barlow Condensed",Inter,sans-serif; }
+.fabio-total-box small { color:var(--muted); font-size:.5rem; }
+.fabio-total-box.valid { border-color:color-mix(in srgb,var(--game-accent) 52%,var(--line)); box-shadow:inset 3px 0 0 var(--game-accent); }
+.fabio-total-box.invalid { border-color:#8f3548; box-shadow:inset 3px 0 0 #ff5e78; }
+.fabio-global-note { min-height:70px; display:grid; place-items:center; padding:10px; border:1px dashed var(--line); color:var(--muted); font-size:.55rem; text-align:center; }
+.fabio-global-table { margin-top:16px; }
+.compact-overall-note { margin:8px; min-height:auto; padding:8px 10px; font-size:.52rem; }
+.fabio-structure-editor { display:grid; gap:14px; }
+@media (max-width:1300px) {
+  .fabio-group-config-row { grid-template-columns:70px repeat(2,minmax(140px,1fr)); }
+  .fabio-group-matches,.fabio-global-note { grid-column:span 2; }
+}
+@media (max-width:760px) {
+  .fabio-group-config-row { grid-template-columns:1fr; }
+  .fabio-group-matches,.fabio-global-note { grid-column:auto; }
+}
