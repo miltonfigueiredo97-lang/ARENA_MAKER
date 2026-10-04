@@ -98,3 +98,12 @@ Antes de criar campeonatos nos formatos Milton ou Liga Fábio, execute `supabase
 - Alternativa de classificação por tabela geral entre todos os grupos.
 - A tabela geral compara pontos por jogo, aproveitamento, saldo por jogo e produção por jogo para não favorecer grupos maiores.
 - Folgas do mata-mata são entregues às melhores campanhas gerais entre os classificados, independentemente do grupo.
+
+## V13 — Jogos de Luta e banco novo
+
+- Novo tipo de campeonato **Jogos de Luta** (Mortal Kombat, The King of Fighters, Tekken e Street Fighter), com os mesmos formatos dos outros jogos.
+- Placar em rounds vencidos, vencedor da luta informado na partida, lutador utilizado e tipo de finalização (K.O., Perfect, Fatality, Brutality, Super/Critical Art, Rage Art/Heat, tempo esgotado).
+- Franquia escolhida na criação (ou "Todas as franquias"); a busca de lutadores filtra pelo elenco da franquia.
+- O Supabase antigo (`moeibdkqkfmkedtrmsyb`) deixou de existir. O sistema agora usa a base compartilhada **football-legacy** com nomes prefixados para não misturar com os outros projetos: tabela `public.arena_tournaments` e bucket `arena-media`. Script: `supabase/MIGRACAO_V13_ARENA.sql` (já aplicado).
+- Chamadas ao banco têm limite de 15 s. Se o banco estiver fora do ar, o sistema avisa e continua em modo local em vez de ficar travado.
+- Botão de criar campeonato não cria duplicados com cliques repetidos; erro de escalação não deixa mais a partida salva pela metade.

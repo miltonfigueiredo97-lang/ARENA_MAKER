@@ -1,6 +1,6 @@
 {
   "name": "arena-maker-championship-builder",
-  "version": "12.2.0",
+  "version": "13.0.0",
   "private": true,
   "type": "module",
   "dependencies": {

@@ -523,6 +523,7 @@ h1 { font-size: clamp(2.15rem,4vw,3.2rem); font-weight: 800; }
 .game-choice.game-fifa { --game-accent:#22c55e; --game-accent-2:#38bdf8; --game-glow:rgba(34,197,94,.18); --game-soft:rgba(34,197,94,.09); }
 .game-choice.game-lol { --game-accent:#b18cff; --game-accent-2:#d7b65c; --game-glow:rgba(177,140,255,.2); --game-soft:rgba(177,140,255,.09); }
 .game-choice.game-beyblade { --game-accent:#ff4d67; --game-accent-2:#41b9ff; --game-glow:rgba(255,77,103,.19); --game-soft:rgba(255,77,103,.09); }
+.game-choice.game-luta { --game-accent:#f97316; --game-accent-2:#facc15; --game-glow:rgba(249,115,22,.2); --game-soft:rgba(249,115,22,.09); }
 
 .game-profile-section { padding:18px; border:1px solid var(--line); background:linear-gradient(145deg,rgba(255,255,255,.025),rgba(0,0,0,.12)); }
 .section-title-line { margin-bottom:14px; }
@@ -531,7 +532,7 @@ h1 { font-size: clamp(2.15rem,4vw,3.2rem); font-weight: 800; }
 .section-title-line strong,.section-title-line small { display:block; }
 .section-title-line strong { font:800 .82rem Inter,sans-serif; text-transform:uppercase; letter-spacing:.04em; }
 .section-title-line small { margin-top:3px; color:var(--muted); font-size:.67rem; }
-.game-choice-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+.game-choice-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
 .game-choice { position:relative; min-height:142px; display:grid; grid-template-columns:42px minmax(0,1fr); align-content:center; align-items:start; gap:12px; padding:17px; border:1px solid var(--line); background:linear-gradient(145deg,#151e2b,#090e16); color:var(--text); text-align:left; overflow:hidden; transition:.17s ease; }
 .game-choice::before { content:''; position:absolute; inset:auto 0 0; height:3px; background:linear-gradient(90deg,var(--game-accent),var(--game-accent-2)); opacity:.3; }
 .game-choice::after { content:''; position:absolute; width:100px; height:100px; right:-55px; top:-55px; border-radius:50%; background:var(--game-glow); filter:blur(7px); }
@@ -559,13 +560,13 @@ h1 { font-size: clamp(2.15rem,4vw,3.2rem); font-weight: 800; }
 .profile-review-strip span,.profile-review-strip strong { display:block; }
 .profile-review-strip span { color:var(--subtle); font-size:.55rem; letter-spacing:.09em; }
 .profile-review-strip strong { margin-top:5px; color:#fff; font-size:.75rem; }
-.review-hero.game-fifa,.review-hero.game-lol,.review-hero.game-beyblade { border-color:color-mix(in srgb,var(--game-accent) 34%,var(--line)); background:linear-gradient(110deg,var(--game-soft),rgba(19,28,40,.85)); }
-.review-hero.game-fifa span,.review-hero.game-lol span,.review-hero.game-beyblade span { color:var(--game-accent); }
+.review-hero.game-fifa,.review-hero.game-lol,.review-hero.game-beyblade,.review-hero.game-luta { border-color:color-mix(in srgb,var(--game-accent) 34%,var(--line)); background:linear-gradient(110deg,var(--game-soft),rgba(19,28,40,.85)); }
+.review-hero.game-fifa span,.review-hero.game-lol span,.review-hero.game-beyblade span,.review-hero.game-luta span { color:var(--game-accent); }
 
-.tournament-card.game-fifa,.tournament-card.game-lol,.tournament-card.game-beyblade { --accent:var(--game-accent); }
-.tournament-card.game-fifa .tournament-card-accent,.tournament-card.game-lol .tournament-card-accent,.tournament-card.game-beyblade .tournament-card-accent { background:linear-gradient(90deg,var(--game-accent),var(--game-accent-2),transparent); }
-.tournament-card.game-fifa .game-kicker,.tournament-card.game-lol .game-kicker,.tournament-card.game-beyblade .game-kicker { color:var(--game-accent); }
-.tournament-card.game-fifa:hover,.tournament-card.game-lol:hover,.tournament-card.game-beyblade:hover { border-color:color-mix(in srgb,var(--game-accent) 50%,var(--line)); }
+.tournament-card.game-fifa,.tournament-card.game-lol,.tournament-card.game-beyblade,.tournament-card.game-luta { --accent:var(--game-accent); }
+.tournament-card.game-fifa .tournament-card-accent,.tournament-card.game-lol .tournament-card-accent,.tournament-card.game-beyblade .tournament-card-accent,.tournament-card.game-luta .tournament-card-accent { background:linear-gradient(90deg,var(--game-accent),var(--game-accent-2),transparent); }
+.tournament-card.game-fifa .game-kicker,.tournament-card.game-lol .game-kicker,.tournament-card.game-beyblade .game-kicker,.tournament-card.game-luta .game-kicker { color:var(--game-accent); }
+.tournament-card.game-fifa:hover,.tournament-card.game-lol:hover,.tournament-card.game-beyblade:hover,.tournament-card.game-luta:hover { border-color:color-mix(in srgb,var(--game-accent) 50%,var(--line)); }
 .game-kicker b { margin-right:5px; }
 
 .tournament-detail-shell { --accent:var(--game-accent); }
@@ -579,7 +580,7 @@ h1 { font-size: clamp(2.15rem,4vw,3.2rem); font-weight: 800; }
 .tournament-detail-shell .game-kicker { color:var(--game-accent); }
 .tournament-detail-shell .detail-menu button.active { border-left-color:var(--game-accent); background:var(--game-soft); }
 .tournament-detail-shell .button.primary { background:var(--game-accent); border-color:var(--game-accent); color:#07100c; box-shadow:0 9px 28px var(--game-glow); }
-.tournament-detail-shell.game-lol .button.primary,.tournament-detail-shell.game-beyblade .button.primary { color:white; }
+.tournament-detail-shell.game-lol .button.primary,.tournament-detail-shell.game-beyblade .button.primary,.tournament-detail-shell.game-luta .button.primary { color:white; }
 .tournament-detail-shell .champion-banner { border-color:color-mix(in srgb,var(--game-accent) 40%,var(--line)); background:linear-gradient(90deg,var(--game-soft),rgba(245,185,66,.08)); }
 
 .panel-kicker { display:block; margin-bottom:5px; color:var(--game-accent,var(--subtle)); font-size:.56rem; font-weight:800; letter-spacing:.12em; }
@@ -1763,3 +1764,6 @@ body.celebrating-champion { overflow:hidden !important; }
   .fabio-group-config-row { grid-template-columns:1fr; }
   .fabio-group-matches,.fabio-global-note { grid-column:auto; }
 }
+@media (max-width: 1100px) { .game-choice-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width: 720px) { .game-choice-grid { grid-template-columns:1fr; } }
+.fighting-series-field { margin-top:12px; }

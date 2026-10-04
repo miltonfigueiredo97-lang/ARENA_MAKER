@@ -8,7 +8,23 @@ const escapeHtml = (value = '') => String(value)
   .replaceAll('"', '&quot;').replaceAll("'", '&#039;');
 
 const MEDIA_BUCKET = 'arena-media';
+// A base Supabase é compartilhada com outros sistemas; tudo do Arena Maker usa o prefixo "arena".
+const TOURNAMENTS_TABLE = 'arena_tournaments';
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const CLOUD_TIMEOUT_MS = 15000;
+
+// Sem limite de tempo, um Supabase pausado ou fora do ar deixa a tela presa em "salvando".
+function fetchWithTimeout(input, init = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CLOUD_TIMEOUT_MS);
+  if (init.signal) init.signal.addEventListener('abort', () => controller.abort(), { once: true });
+  return fetch(input, { ...init, signal: controller.signal })
+    .catch((error) => {
+      if (error?.name === 'AbortError') throw new Error('O banco de dados não respondeu a tempo. Verifique a conexão e tente novamente.');
+      throw error;
+    })
+    .finally(() => clearTimeout(timer));
+}
 
 function initials(value = '') {
   return String(value).trim().split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || '?';
@@ -89,6 +105,11 @@ const GAME_PROFILES = {
     scoreShort: 'G',
     choiceLabel: 'Time utilizado',
     choicePlural: 'Times',
+    choiceTableLabel: 'Time',
+    statsLabel: 'Gols e times',
+    assetSearch: true,
+    assetPlaceholder: 'Busque o nome do clube',
+    assetHint: 'O escudo será buscado automaticamente.',
     drawAllowed: true
   },
   lol: {
@@ -101,6 +122,11 @@ const GAME_PROFILES = {
     scoreShort: 'K',
     choiceLabel: 'Campeão utilizado',
     choicePlural: 'Campeões',
+    choiceTableLabel: 'Campeão',
+    statsLabel: 'K/D/A e KDA',
+    assetSearch: true,
+    assetPlaceholder: 'Busque o campeão',
+    assetHint: 'A imagem oficial do campeão será carregada pelo Data Dragon.',
     drawAllowed: false
   },
   beyblade: {
@@ -113,10 +139,44 @@ const GAME_PROFILES = {
     scoreShort: 'PTS',
     choiceLabel: 'Beyblade utilizado',
     choicePlural: 'Beyblades',
+    choiceTableLabel: 'Beyblade',
+    statsLabel: 'Pontos e finalizações',
+    winnerLabel: 'Vencedor da batalha',
     drawAllowed: false,
     finishTypes: ['Spin Finish', 'Burst Finish', 'Over Finish', 'Extreme Finish', 'Outro']
+  },
+  luta: {
+    id: 'luta',
+    label: 'Jogos de Luta',
+    short: 'LUTA',
+    icon: '🥊',
+    description: 'Mortal Kombat, KOF, Tekken e Street Fighter: rounds, lutadores, finalizações e aproveitamento.',
+    scoreLabel: 'Rounds vencidos',
+    scoreShort: 'R',
+    choiceLabel: 'Lutador utilizado',
+    choicePlural: 'Lutadores',
+    choiceTableLabel: 'Lutador',
+    statsLabel: 'Rounds e finalizações',
+    winnerLabel: 'Vencedor da luta',
+    assetSearch: true,
+    assetPlaceholder: 'Busque o lutador',
+    assetHint: 'Elenco de Mortal Kombat, The King of Fighters, Tekken e Street Fighter.',
+    drawAllowed: false,
+    finishTypes: ['K.O.', 'Perfect', 'Fatality', 'Brutality', 'Super / Critical Art', 'Rage Art / Heat', 'Tempo esgotado', 'Outro']
   }
 };
+
+const FIGHTING_SERIES = {
+  all: 'Todas as franquias',
+  mk: 'Mortal Kombat',
+  kof: 'The King of Fighters',
+  tekken: 'Tekken',
+  sf: 'Street Fighter'
+};
+
+function fightingSeriesLabel(series) {
+  return series && series !== 'all' ? FIGHTING_SERIES[series] || '' : '';
+}
 
 const THEME_PRESETS = [
   { name:'Verde Arena', value:'#22c55e' },
@@ -128,7 +188,7 @@ const THEME_PRESETS = [
 ];
 
 function defaultThemeColor(profileId = 'fifa') {
-  return ({ fifa:'#22c55e', lol:'#8b5cf6', beyblade:'#ef4444' })[profileId] || '#22c55e';
+  return ({ fifa:'#22c55e', lol:'#8b5cf6', beyblade:'#ef4444', luta:'#f97316' })[profileId] || '#22c55e';
 }
 
 function normalizeHexColor(value, fallback = '#22c55e') {
@@ -169,6 +229,7 @@ function detectGameProfile(value = '') {
   const text = String(value).toLowerCase();
   if (text.includes('league') || text === 'lol' || text.includes('legends')) return 'lol';
   if (text.includes('bey')) return 'beyblade';
+  if (/luta|mortal|kombat|tekken|street|fighter|kof|king of/.test(text)) return 'luta';
   return 'fifa';
 }
 
@@ -250,11 +311,18 @@ async function init() {
     state.supabase = window.supabase.createClient(
       state.config.supabaseUrl,
       state.config.supabaseAnonKey,
-      { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } }
+      { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }, global: { fetch: fetchWithTimeout } }
     );
     state.localMode = false;
     setSyncStatus(true);
-    await loadCloudData();
+    const loaded = await loadCloudData();
+    if (!loaded) {
+      // Banco indisponível: segue em modo local para o sistema não ficar inutilizável.
+      state.supabase = null;
+      state.localMode = true;
+      setSyncStatus(false, 'Banco indisponível');
+      loadLocalData();
+    }
   } else {
     state.localMode = true;
     setSyncStatus(false);
@@ -282,10 +350,10 @@ function bindStaticEvents() {
   });
 }
 
-function setSyncStatus(online) {
+function setSyncStatus(online, title = '') {
   $('#syncStatus').innerHTML = `
     <span class="sync-dot ${online ? 'online' : ''}"></span>
-    <div><strong>${online ? 'Supabase conectado' : 'Modo local'}</strong><span>${online ? 'Dados sincronizados' : 'Somente neste navegador'}</span></div>`;
+    <div><strong>${escapeHtml(title || (online ? 'Supabase conectado' : 'Modo local'))}</strong><span>${online ? 'Dados sincronizados' : 'Somente neste navegador'}</span></div>`;
 }
 
 function loadLocalData() {
@@ -299,7 +367,8 @@ function normalizeTournament(raw) {
   tournament.version = Math.max(Number(tournament.version || 0), 14);
   tournament.gameProfile = tournament.gameProfile || detectGameProfile(tournament.game);
   const profile = getGameProfile(tournament.gameProfile);
-  tournament.game = profile.label;
+  const series = profile.id === 'luta' && FIGHTING_SERIES[tournament.settings?.fightingSeries] ? tournament.settings.fightingSeries : 'all';
+  tournament.game = fightingSeriesLabel(series) ? `${profile.label} · ${fightingSeriesLabel(series)}` : profile.label;
   if (tournament.format === 'milton') tournament.mode = 'dynamic';
   if (tournament.format === 'fabio') tournament.mode = 'individual';
   tournament.coverImageUrl = tournament.coverImageUrl || tournament.cover_image_url || '';
@@ -345,7 +414,8 @@ function normalizeTournament(raw) {
     fabioOverallQualifiers: Math.max(2, Number(tournament.settings?.fabioOverallQualifiers || tournament.settings?.qualifiers || 2)),
     fabioOverallSelection: tournament.settings?.fabioOverallSelection === 'worst' ? 'worst' : 'best',
     groupAssignments: tournament.settings?.groupAssignments || {},
-    knockoutUnit: tournament.settings?.knockoutUnit || 'individual'
+    knockoutUnit: tournament.settings?.knockoutUnit || 'individual',
+    fightingSeries: series
   };
   if (tournament.format === 'fabio') {
     const structure = normalizeFabioGroupConfig(
@@ -414,13 +484,18 @@ function saveLocalData() {
 }
 
 async function loadCloudData() {
-  const { data, error } = await state.supabase.from('tournaments').select('*').order('updated_at', { ascending: false });
-  if (error) {
-    toast(`Falha ao carregar: ${error.message}`, 'error');
-    state.tournaments = [];
-    return;
+  let result;
+  try {
+    result = await state.supabase.from(TOURNAMENTS_TABLE).select('*').order('updated_at', { ascending: false });
+  } catch (error) {
+    result = { data: null, error };
   }
-  state.tournaments = (data || []).map((row) => normalizeTournament({ ...row.state, id: row.id, coverImageUrl: row.cover_image_url || row.state?.coverImageUrl || '' }));
+  if (result.error) {
+    toast(`Banco indisponível (${result.error.message}). Usando modo local.`, 'error');
+    return false;
+  }
+  state.tournaments = (result.data || []).map((row) => normalizeTournament({ ...row.state, id: row.id, coverImageUrl: row.cover_image_url || row.state?.coverImageUrl || '' }));
+  return true;
 }
 
 async function persistTournament(tournament) {
@@ -444,7 +519,7 @@ async function persistTournament(tournament) {
       state: tournament,
       updated_at: now()
     };
-    const { error } = await state.supabase.from('tournaments').upsert(payload);
+    const { error } = await state.supabase.from(TOURNAMENTS_TABLE).upsert(payload);
     if (error) throw error;
   }
   renderCurrentView();
@@ -454,7 +529,7 @@ async function removeTournament(id) {
   state.tournaments = state.tournaments.filter((item) => item.id !== id);
   if (state.localMode) saveLocalData();
   else {
-    const { error } = await state.supabase.from('tournaments').delete().eq('id', id);
+    const { error } = await state.supabase.from(TOURNAMENTS_TABLE).delete().eq('id', id);
     if (error) throw error;
   }
   state.activeTournamentId = null;
@@ -629,7 +704,8 @@ function newWizardState() {
     fabioSelectionByGroup: [],
     fabioOverallQualifiers: 8,
     fabioOverallSelection: 'best',
-    knockoutUnit: 'individual'
+    knockoutUnit: 'individual',
+    fightingSeries: 'all'
   };
 }
 
@@ -668,13 +744,18 @@ function renderWizard() {
     if (wizard.step === 1) closeModal();
     else { captureWizardFields(); wizard.step -= 1; renderWizard(); }
   });
-  $('[data-wizard-next]').addEventListener('click', async () => {
+  $('[data-wizard-next]').addEventListener('click', async (event) => {
     captureWizardFields();
     const error = validateWizardStep(wizard.step);
     if (error) return toast(error, 'error');
     if (wizard.step < 4) { wizard.step += 1; renderWizard(); return; }
+    // Evita criar o mesmo campeonato duas vezes com cliques repetidos enquanto salva.
+    const button = event.currentTarget;
+    if (button.disabled) return;
+    button.disabled = true;
+    let tournament = null;
     try {
-      const tournament = buildTournamentFromWizard();
+      tournament = buildTournamentFromWizard();
       await persistTournament(tournament);
       closeModal();
       state.activeTournamentId = tournament.id;
@@ -682,6 +763,9 @@ function renderWizard() {
       renderTournamentsView();
       toast('Campeonato criado e confrontos sorteados.', 'success');
     } catch (error) {
+      // Não deixa na lista um campeonato que não chegou a ser salvo.
+      if (tournament) state.tournaments = state.tournaments.filter((item) => item.id !== tournament.id);
+      button.disabled = false;
       toast(error.message, 'error');
     }
   });
@@ -712,6 +796,7 @@ function wizardFormatHtml(wizard) {
           <div><strong>${selectedProfile.label}</strong><span>${selectedProfile.description}</span></div>
           <div class="profile-tags"><b>${selectedProfile.scoreLabel}</b><b>${selectedProfile.choicePlural}</b><b>MVP</b></div>
         </div>
+        ${selectedProfile.id === 'luta' ? `<label class="field fighting-series-field"><span>Franquia do campeonato</span><select id="wizardFightingSeries">${Object.entries(FIGHTING_SERIES).map(([value,label]) => `<option value="${value}" ${wizard.fightingSeries === value ? 'selected' : ''}>${label}</option>`).join('')}</select><small>Filtra a busca de lutadores. Use "Todas as franquias" para campeonatos com jogos variados.</small></label>` : ''}
       </section>
       <section class="game-profile-section theme-section">
         <div class="section-title-line"><div><span>02</span><div><strong>Cor tema do campeonato</strong><small>Essa cor será usada nos botões, classificação, chave, Central de Jogos e estatísticas.</small></div></div></div>
@@ -1169,7 +1254,7 @@ function wizardReviewHtml(wizard) {
         ${hybrid ? `<div class="review-stat"><span>Classificados</span><strong>${wizard.qualifiers}</strong></div>` : ''}
         ${plan ? `<div class="review-stat"><span>Folgas iniciais</span><strong>${plan.byes}</strong></div>` : ''}
       </div>
-      <div class="profile-review-strip game-${profile.id}"><div><span>PLACAR</span><strong>${profile.scoreLabel}</strong></div><div><span>ESCOLHA</span><strong>${profile.choiceLabel}</strong></div><div><span>ESTATÍSTICAS</span><strong>${profile.id === 'lol' ? 'K/D/A e KDA' : profile.id === 'fifa' ? 'Gols e times' : 'Pontos e finalizações'}</strong></div></div>
+      <div class="profile-review-strip game-${profile.id}"><div><span>PLACAR</span><strong>${profile.scoreLabel}</strong></div><div><span>ESCOLHA</span><strong>${profile.choiceLabel}</strong></div><div><span>ESTATÍSTICAS</span><strong>${profile.statsLabel}</strong></div></div>
       ${specialSummary}
       ${hybrid ? `<div class="panel"><div class="panel-body"><table class="stats-table"><tbody>
         <tr><td>Estrutura da chave</td><td class="num">${wizard.bracketMode === 'complete' ? 'Completa' : 'Adaptada'}</td></tr>
@@ -1182,6 +1267,7 @@ function wizardReviewHtml(wizard) {
 function bindWizardStepEvents() {
   const wizard = state.wizard;
   $$('[data-game-choice]').forEach((choice) => choice.addEventListener('click', () => {
+    captureWizardFields();
     wizard.gameProfile = choice.dataset.gameChoice;
     if (!wizard.themeCustomized) wizard.themeColor = defaultThemeColor(wizard.gameProfile);
     renderWizard();
@@ -1360,6 +1446,7 @@ function captureWizardFields() {
   const wizard = state.wizard;
   if ($('#wizardName')) wizard.name = $('#wizardName').value.trim();
   if ($('#wizardMode')) wizard.mode = $('#wizardMode').value;
+  if ($('#wizardFightingSeries')) wizard.fightingSeries = FIGHTING_SERIES[$('#wizardFightingSeries').value] ? $('#wizardFightingSeries').value : 'all';
   if ($('#wizardThemeColor')) wizard.themeColor = normalizeHexColor($('#wizardThemeColor').value, defaultThemeColor(wizard.gameProfile));
   if ($('#wizardLeagueLegs')) wizard.leagueLegs = Number($('#wizardLeagueLegs').value);
   if ($('#wizardPointsWin')) wizard.pointsWin = Math.max(1, Number($('#wizardPointsWin').value) || 3);
@@ -1393,7 +1480,7 @@ function validateWizardStep(step) {
   const wizard = state.wizard;
   if (step === 1) {
     if (!wizard.name) return 'Informe o nome do campeonato.';
-    if (!GAME_PROFILES[wizard.gameProfile]) return 'Escolha FIFA, League of Legends ou Beyblade.';
+    if (!GAME_PROFILES[wizard.gameProfile]) return 'Escolha FIFA, League of Legends, Beyblade ou Jogos de Luta.';
     if (!['league','knockout','mixed','milton','fabio'].includes(wizard.format)) return 'Escolha um formato válido.';
   }
   if (step === 2) {
@@ -1482,7 +1569,7 @@ function buildTournamentFromWizard() {
     themeColor: normalizeHexColor(wizard.themeColor, defaultThemeColor(profile.id)),
     name: wizard.name,
     gameProfile: profile.id,
-    game: profile.label,
+    game: profile.id === 'luta' && fightingSeriesLabel(wizard.fightingSeries) ? `${profile.label} · ${fightingSeriesLabel(wizard.fightingSeries)}` : profile.label,
     format: wizard.format,
     mode: wizard.mode,
     extraLabel: profile.choiceLabel,
@@ -1511,7 +1598,8 @@ function buildTournamentFromWizard() {
       fabioOverallQualifiers: wizard.format === 'fabio' ? wizard.fabioOverallQualifiers : 0,
       fabioOverallSelection: wizard.format === 'fabio' ? wizard.fabioOverallSelection : 'best',
       groupAssignments: {},
-      knockoutUnit: wizard.mode === 'dynamic' ? 'individual' : wizard.mode
+      knockoutUnit: wizard.mode === 'dynamic' ? 'individual' : wizard.mode,
+      fightingSeries: profile.id === 'luta' ? (wizard.fightingSeries || 'all') : 'all'
     },
     matches: [],
     knockoutState: { started: wizard.format === 'knockout', currentRound: 0, pendingByes: [], initialByes: [], pairing, seeded: pairing === 'seeded' || pairing === 'crossed' },
@@ -3169,7 +3257,7 @@ function statisticsTabHtml(tournament) {
       ${recordCard('Maior diferença',records.biggest ? Math.abs(Number(records.biggest.homeScore)-Number(records.biggest.awayScore)) : '—',matchRecordName(tournament,records.biggest),'↗')}
       ${recordCard('Jogo com maior total',records.highest ? Number(records.highest.homeScore)+Number(records.highest.awayScore) : '—',matchRecordName(tournament,records.highest),'★')}
       ${recordCard('Mais MVPs',records.topMvpName,'Destaque individual','M')}
-      ${profile.id === 'beyblade' ? recordCard('Finalização mais comum',records.topFinish,'Batalhas registradas','◎') : recordCard(`${profile.choiceLabel} mais frequente`,mostChosen?.name || '—',mostChosen ? `${mostChosen.picks} escolha(s)` : 'Sem dados',profile.id === 'fifa' ? '⚽' : '◈')}
+      ${profile.finishTypes ? recordCard('Finalização mais comum',records.topFinish,profile.id === 'luta' ? 'Lutas registradas' : 'Batalhas registradas',profile.icon) : recordCard(`${profile.choiceLabel} mais frequente`,mostChosen?.name || '—',mostChosen ? `${mostChosen.picks} escolha(s)` : 'Sem dados',profile.icon)}
     </div>
     <div class="stats-columns">
       <section class="panel analytics-panel">
@@ -3179,7 +3267,7 @@ function statisticsTabHtml(tournament) {
           <div><span>Menos escolhido</span><strong>${escapeHtml(leastChosen?.name || '—')}</strong></div>
           <div><span>Melhor aproveitamento</span><strong>${escapeHtml(bestChoice?.name || '—')}</strong><small>${bestChoice ? `${bestChoice.winRate.toFixed(1)}%` : ''}</small></div>
         </div>
-        <div class="table-wrap"><table class="stats-table"><thead><tr><th>${profile.id === 'fifa' ? 'Time' : profile.id === 'lol' ? 'Campeão' : 'Beyblade'}</th><th class="num">ESC</th><th class="num">V</th><th class="num">D</th><th class="num">WR</th>${profile.id === 'lol' ? '<th class="num">K</th><th class="num">D</th><th class="num">A</th><th class="num">KDA</th>' : `<th class="num">${profile.scoreShort}+</th><th class="num">${profile.scoreShort}-</th>`}</tr></thead><tbody>${choices.length ? choices.map((row)=>`<tr><td>${choiceIdentityHtml(row.name, row.image)}</td><td class="num">${row.picks}</td><td class="num win-cell">${row.wins}</td><td class="num loss-cell">${row.losses}</td><td class="num"><strong>${row.winRate.toFixed(1)}%</strong></td>${profile.id === 'lol' ? `<td class="num">${row.kills}</td><td class="num">${row.deaths}</td><td class="num">${row.assists}</td><td class="num">${row.kda.toFixed(2)}</td>` : `<td class="num">${row.scoreFor}</td><td class="num">${row.scoreAgainst}</td>`}</tr>`).join('') : `<tr><td colspan="9" class="empty-cell">Registre partidas e informe ${profile.choiceLabel.toLowerCase()} para gerar este ranking.</td></tr>`}</tbody></table></div>
+        <div class="table-wrap"><table class="stats-table"><thead><tr><th>${profile.choiceTableLabel}</th><th class="num">ESC</th><th class="num">V</th><th class="num">D</th><th class="num">WR</th>${profile.id === 'lol' ? '<th class="num">K</th><th class="num">D</th><th class="num">A</th><th class="num">KDA</th>' : `<th class="num">${profile.scoreShort}+</th><th class="num">${profile.scoreShort}-</th>`}</tr></thead><tbody>${choices.length ? choices.map((row)=>`<tr><td>${choiceIdentityHtml(row.name, row.image)}</td><td class="num">${row.picks}</td><td class="num win-cell">${row.wins}</td><td class="num loss-cell">${row.losses}</td><td class="num"><strong>${row.winRate.toFixed(1)}%</strong></td>${profile.id === 'lol' ? `<td class="num">${row.kills}</td><td class="num">${row.deaths}</td><td class="num">${row.assists}</td><td class="num">${row.kda.toFixed(2)}</td>` : `<td class="num">${row.scoreFor}</td><td class="num">${row.scoreAgainst}</td>`}</tr>`).join('') : `<tr><td colspan="9" class="empty-cell">Registre partidas e informe ${profile.choiceLabel.toLowerCase()} para gerar este ranking.</td></tr>`}</tbody></table></div>
       </section>
       <section class="panel analytics-panel">
         <div class="panel-head"><div><span class="panel-kicker">DESEMPENHO</span><h3>Jogadores</h3><p>Campanha individual somente neste campeonato.</p></div></div>
@@ -3247,13 +3335,13 @@ function matchGameFieldsHtml(tournament, match, home, away, knockout) {
     </div>
     <label class="field winner-field"><span>Vencedor da partida</span><select id="manualWinner" required><option value="">Selecione o vencedor</option><option value="${home.id}" ${match.winnerId === home.id ? 'selected' : ''}>${escapeHtml(home.name)}</option><option value="${away.id}" ${match.winnerId === away.id ? 'selected' : ''}>${escapeHtml(away.name)}</option></select><small>Kills não definem obrigatoriamente o vencedor; por isso ele é informado separadamente.</small></label>`;
   }
-  if (profile.id === 'beyblade') {
-    return `<div class="versus-form game-beyblade">
+  if (profile.finishTypes) {
+    return `<div class="versus-form game-${profile.id}">
       ${basicSideForm('home',home,profile,match.homeChoice,match.homeScore,match.homeChoiceImage)}
       <div class="versus-divider"><span>VS</span></div>
       ${basicSideForm('away',away,profile,match.awayChoice,match.awayScore,match.awayChoiceImage)}
     </div>
-    <div class="grid cols-2"><label class="field"><span>Vencedor da batalha</span><select id="manualWinner" required><option value="">Selecione o vencedor</option><option value="${home.id}" ${match.winnerId === home.id ? 'selected' : ''}>${escapeHtml(home.name)}</option><option value="${away.id}" ${match.winnerId === away.id ? 'selected' : ''}>${escapeHtml(away.name)}</option></select></label><label class="field"><span>Tipo de finalização</span><select id="finishType"><option value="">Não informado</option>${profile.finishTypes.map((type)=>`<option value="${type}" ${match.finishType === type ? 'selected' : ''}>${type}</option>`).join('')}</select></label></div>`;
+    <div class="grid cols-2"><label class="field"><span>${profile.winnerLabel}</span><select id="manualWinner" required><option value="">Selecione o vencedor</option><option value="${home.id}" ${match.winnerId === home.id ? 'selected' : ''}>${escapeHtml(home.name)}</option><option value="${away.id}" ${match.winnerId === away.id ? 'selected' : ''}>${escapeHtml(away.name)}</option></select></label><label class="field"><span>Tipo de finalização</span><select id="finishType"><option value="">Não informado</option>${profile.finishTypes.map((type)=>`<option value="${type}" ${match.finishType === type ? 'selected' : ''}>${type}</option>`).join('')}</select></label></div>`;
   }
   return `<div class="versus-form game-fifa">
     ${basicSideForm('home',home,profile,match.homeChoice,match.homeScore,match.homeChoiceImage)}
@@ -3265,20 +3353,19 @@ function matchGameFieldsHtml(tournament, match, home, away, knockout) {
 
 
 function gameAssetField(side, profile, value = '', image = '') {
-  const enabled = profile.id === 'fifa' || profile.id === 'lol';
-  if (!enabled) {
+  if (!profile.assetSearch) {
     return `<label class="field"><span>${profile.choiceLabel}</span><input id="${side}Choice" value="${escapeHtml(value || '')}" placeholder="Digite ${profile.choiceLabel.toLowerCase()}"><input id="${side}ChoiceImage" type="hidden" value="${escapeHtml(image || '')}"></label>`;
   }
   return `<label class="field asset-picker-field">
     <span>${profile.choiceLabel}</span>
     <div class="asset-picker" data-asset-picker="${side}" data-game="${profile.id}">
-      <span class="asset-picker-preview" id="${side}ChoicePreview">${image ? `<img src="${escapeHtml(image)}" alt="">` : `<b>${profile.id === 'fifa' ? '⚽' : '◈'}</b>`}</span>
-      <input id="${side}Choice" data-asset-input="${side}" value="${escapeHtml(value || '')}" autocomplete="off" placeholder="${profile.id === 'fifa' ? 'Busque o nome do clube' : 'Busque o campeão'}">
+      <span class="asset-picker-preview" id="${side}ChoicePreview">${image ? `<img src="${escapeHtml(image)}" alt="">` : `<b>${profile.icon}</b>`}</span>
+      <input id="${side}Choice" data-asset-input="${side}" value="${escapeHtml(value || '')}" autocomplete="off" placeholder="${profile.assetPlaceholder}">
       <input id="${side}ChoiceImage" type="hidden" value="${escapeHtml(image || '')}">
       <span class="asset-picker-loading" data-asset-loading="${side}"></span>
     </div>
     <div class="asset-picker-results" data-asset-results="${side}"></div>
-    <small>${profile.id === 'fifa' ? 'O escudo será buscado automaticamente.' : 'A imagem oficial do campeão será carregada pelo Data Dragon.'}</small>
+    <small>${profile.assetHint}</small>
   </label>`;
 }
 
@@ -3291,10 +3378,10 @@ function lolSideForm(side, participant, champion, kills, deaths, assists, image 
   return `<section class="side-form"><div class="side-form-head"><span>${side === 'home' ? 'LADO AZUL' : 'LADO VERMELHO'}</span><strong>${escapeHtml(participant.name)}</strong></div>${gameAssetField(side, profile, champion, image)}<div class="kda-inputs"><label class="field"><span>Kills</span><input id="${side}Score" type="number" min="0" value="${kills ?? ''}" required></label><label class="field"><span>Mortes</span><input id="${side}Deaths" type="number" min="0" value="${deaths ?? 0}" required></label><label class="field"><span>Assistências</span><input id="${side}Assists" type="number" min="0" value="${assists ?? 0}" required></label></div></section>`;
 }
 
-async function fetchGameAssets(game, query) {
-  const cacheKey = `${game}:${String(query || '').trim().toLowerCase()}`;
+async function fetchGameAssets(game, query, series = '') {
+  const cacheKey = `${game}:${series}:${String(query || '').trim().toLowerCase()}`;
   if (state.assetSearchCache.has(cacheKey)) return state.assetSearchCache.get(cacheKey);
-  const response = await fetch(`/api/game-assets?game=${encodeURIComponent(game)}&q=${encodeURIComponent(query)}`);
+  const response = await fetch(`/api/game-assets?game=${encodeURIComponent(game)}&q=${encodeURIComponent(query)}${series ? `&series=${encodeURIComponent(series)}` : ''}`);
   if (!response.ok) throw new Error('Não foi possível buscar imagens.');
   const payload = await response.json();
   const items = Array.isArray(payload.items) ? payload.items : [];
@@ -3302,7 +3389,7 @@ async function fetchGameAssets(game, query) {
   return items;
 }
 
-function bindGameAssetPicker(game, side) {
+function bindGameAssetPicker(game, side, series = '') {
   const input = $(`[data-asset-input="${side}"]`);
   const results = $(`[data-asset-results="${side}"]`);
   const imageInput = $(`#${side}ChoiceImage`);
@@ -3318,7 +3405,7 @@ function bindGameAssetPicker(game, side) {
       return;
     }
     results.innerHTML = items.map((item, index) => `<button type="button" class="asset-result" data-asset-index="${index}">
-      <span>${item.image ? `<img src="${escapeHtml(item.image)}" alt="">` : '<b>?</b>'}</span>
+      <span>${item.image ? `<img src="${escapeHtml(item.image)}" alt="">` : `<b>${getGameProfile(game).icon}</b>`}</span>
       <div><strong>${escapeHtml(item.name)}</strong>${item.subtitle ? `<small>${escapeHtml(item.subtitle)}</small>` : ''}</div>
     </button>`).join('');
     results.classList.add('show');
@@ -3326,7 +3413,7 @@ function bindGameAssetPicker(game, side) {
       const item = items[Number(button.dataset.assetIndex)];
       input.value = item.name;
       imageInput.value = item.image || '';
-      preview.innerHTML = item.image ? `<img src="${escapeHtml(item.image)}" alt="">` : `<b>${game === 'fifa' ? '⚽' : '◈'}</b>`;
+      preview.innerHTML = item.image ? `<img src="${escapeHtml(item.image)}" alt="">` : `<b>${getGameProfile(game).icon}</b>`;
       close();
     }));
   };
@@ -3336,14 +3423,14 @@ function bindGameAssetPicker(game, side) {
     const minimum = game === 'fifa' ? 2 : 1;
     if (query.length < minimum) return close();
     loading.classList.add('show');
-    try { render(await fetchGameAssets(game, query)); }
+    try { render(await fetchGameAssets(game, query, series)); }
     catch { close(); }
     finally { loading.classList.remove('show'); }
   };
 
   input.addEventListener('input', () => {
     imageInput.value = '';
-    preview.innerHTML = `<b>${game === 'fifa' ? '⚽' : '◈'}</b>`;
+    preview.innerHTML = `<b>${getGameProfile(game).icon}</b>`;
     clearTimeout(state.assetSearchTimers[side]);
     state.assetSearchTimers[side] = setTimeout(search, 280);
   });
@@ -3376,9 +3463,9 @@ function openMatchModal(tournamentId, matchId) {
       <div class="modal-foot"><div>${match.played ? '<button class="button danger" type="button" data-clear-result>Limpar resultado</button>' : ''}</div><div style="display:flex;gap:8px"><button class="button ghost" type="button" data-close>Cancelar</button><button class="button primary" type="submit">Salvar resultado</button></div></div>
     </form>`,'wide');
 
-  if (profile.id === 'fifa' || profile.id === 'lol') {
-    bindGameAssetPicker(profile.id, 'home');
-    bindGameAssetPicker(profile.id, 'away');
+  if (profile.assetSearch) {
+    bindGameAssetPicker(profile.id, 'home', tournament.settings?.fightingSeries);
+    bindGameAssetPicker(profile.id, 'away', tournament.settings?.fightingSeries);
   }
 
   $$('[data-close]').forEach((button) => button.addEventListener('click', closeModal));
@@ -3629,9 +3716,9 @@ function openGamesCenter(tournamentId, requestedMatchId = '') {
     renderTournamentDetail();
   });
   if (!selected) return;
-  if (profile.id === 'fifa' || profile.id === 'lol') {
-    bindGameAssetPicker(profile.id, 'home');
-    bindGameAssetPicker(profile.id, 'away');
+  if (profile.assetSearch) {
+    bindGameAssetPicker(profile.id, 'home', tournament.settings?.fightingSeries);
+    bindGameAssetPicker(profile.id, 'away', tournament.settings?.fightingSeries);
   }
   $('[data-center-clear]')?.addEventListener('click', async () => {
     if (!confirm('Limpar este resultado? Fases posteriores do mata-mata também poderão ser removidas.')) return;
@@ -3710,6 +3797,7 @@ function openTournamentEditModal(tournamentId) {
     <form id="tournamentEditForm"><div class="modal-body stack">
       <div class="media-editor-hero"><div class="media-editor-preview cover" id="tournamentCoverPreview">${tournament.coverImageUrl ? `<img src="${escapeHtml(tournament.coverImageUrl)}" alt="">` : `<b>${profile.icon}</b>`}</div><div><h3>Capa do campeonato</h3><p>JPG, PNG ou WebP de até 5 MB. A imagem será salva no Supabase Storage.</p><label class="button secondary file-button">Selecionar imagem<input id="tournamentCoverFile" type="file" accept="image/*"></label><button type="button" class="button ghost" data-remove-cover>Remover capa</button></div></div>
       <div class="grid cols-2"><label class="field"><span>Nome do campeonato</span><input id="editTournamentName" value="${escapeHtml(tournament.name)}" required></label><label class="field"><span>Perfil do jogo</span><select id="editGameProfile">${Object.values(GAME_PROFILES).map((item) => `<option value="${item.id}" ${profile.id === item.id ? 'selected' : ''}>${item.label}</option>`).join('')}</select><small>Ao trocar o jogo, os placares permanecem; campos específicos antigos serão limpos.</small></label></div>
+      <label class="field"><span>Franquia (somente Jogos de Luta)</span><select id="editFightingSeries">${Object.entries(FIGHTING_SERIES).map(([value,label]) => `<option value="${value}" ${(tournament.settings?.fightingSeries || 'all') === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
       <section class="theme-edit-section"><div><span class="panel-kicker">IDENTIDADE VISUAL</span><h3>Cor tema do campeonato</h3><p>A alteração é aplicada imediatamente em toda a competição.</p></div>${themePickerHtml('editThemeColor', tournament.themeColor)}</section>
       <input id="removeTournamentCover" type="hidden" value="0">
     </div><div class="modal-foot"><button type="button" class="button ghost" data-close>Cancelar</button><button class="button primary" type="submit">Salvar alterações</button></div></form>`, 'wide');
@@ -3750,6 +3838,9 @@ function openTournamentEditModal(tournamentId) {
         tournament.extraLabel = nextProfile.choiceLabel;
         tournament.matches.forEach((match) => Object.assign(match, { homeChoice:'', awayChoice:'', homeChoiceImage:'', awayChoiceImage:'', homeDeaths:0, awayDeaths:0, homeAssists:0, awayAssists:0, finishType:'' }));
       }
+      const series = newProfileId === 'luta' && FIGHTING_SERIES[$('#editFightingSeries')?.value] ? $('#editFightingSeries').value : 'all';
+      tournament.settings.fightingSeries = series;
+      tournament.game = fightingSeriesLabel(series) ? `${getGameProfile(newProfileId).label} · ${fightingSeriesLabel(series)}` : getGameProfile(newProfileId).label;
       await persistTournament(tournament);
       closeModal();
       renderTournamentDetail();
@@ -4368,9 +4459,9 @@ openGamesCenter = function(tournamentId, requestedMatchId = '', requestedContext
     requestAnimationFrame(() => requestAnimationFrame(() => scrollCenterBracketToActiveStage(tournament, selected, contextMode)));
   }
   if (!selected) return;
-  if (profile.id === 'fifa' || profile.id === 'lol') {
-    bindGameAssetPicker(profile.id, 'home');
-    bindGameAssetPicker(profile.id, 'away');
+  if (profile.assetSearch) {
+    bindGameAssetPicker(profile.id, 'home', tournament.settings?.fightingSeries);
+    bindGameAssetPicker(profile.id, 'away', tournament.settings?.fightingSeries);
   }
   $('[data-center-clear]')?.addEventListener('click', async () => {
     if (!confirm('Limpar este resultado? Fases posteriores do mata-mata também poderão ser removidas.')) return;
@@ -4440,6 +4531,27 @@ saveMatchFromForm = async function(tournament, match) {
     if (!winnerId) throw new Error('Selecione o vencedor da partida.');
   }
 
+  // Valida as escalações antes de alterar qualquer dado, para um erro não deixar a partida pela metade.
+  const mvpPlayerId = $('#matchMvp').value;
+  let lineups = null;
+  if (tournament.mode === 'teams') {
+    lineups = {
+      home: $$('[name="homeLineup"]:checked').map((input) => input.value),
+      away: $$('[name="awayLineup"]:checked').map((input) => input.value)
+    };
+    if (!lineups.home.length || !lineups.away.length) throw new Error('Selecione pelo menos um jogador em cada escalação.');
+  }
+  if (tournament.mode === 'dynamic' && match.stage === 'league') {
+    const teamSize = Number(tournament.settings.dynamicTeamSize || 2);
+    lineups = {
+      home: $$('[name="homeDynamicLineup"]:checked').map((input) => input.value),
+      away: $$('[name="awayDynamicLineup"]:checked').map((input) => input.value)
+    };
+    if (lineups.home.length !== teamSize || lineups.away.length !== teamSize) throw new Error(`Selecione exatamente ${teamSize} jogadores em cada lado.`);
+    if (lineups.home.some((id) => lineups.away.includes(id))) throw new Error('O mesmo jogador não pode atuar pelos dois lados.');
+    if (mvpPlayerId && ![...lineups.home, ...lineups.away].includes(mvpPlayerId)) throw new Error('O MVP precisa estar em uma das equipes desta partida.');
+  }
+
   if (match.stage === 'league' && isHybridFormat(tournament.format) && tournament.knockoutState.started) {
     if (!confirm('Alterar a fase de liga recriará o mata-mata com a nova classificação. Continuar?')) throw new Error('Alteração cancelada.');
     resetMixedKnockout(tournament);
@@ -4460,24 +4572,12 @@ saveMatchFromForm = async function(tournament, match) {
     homeAssists: Number($('#homeAssists')?.value || 0),
     awayAssists: Number($('#awayAssists')?.value || 0),
     finishType: $('#finishType')?.value || '',
-    mvpPlayerId: $('#matchMvp').value,
+    mvpPlayerId,
     notes: $('#matchNotes')?.value?.trim() ?? match.notes ?? ''
   });
-
-  if (tournament.mode === 'teams') {
-    match.homeLineup = $$('[name="homeLineup"]:checked').map((input) => input.value);
-    match.awayLineup = $$('[name="awayLineup"]:checked').map((input) => input.value);
-    if (!match.homeLineup.length || !match.awayLineup.length) throw new Error('Selecione pelo menos um jogador em cada escalação.');
-  }
-  if (tournament.mode === 'dynamic' && match.stage === 'league') {
-    const teamSize = Number(tournament.settings.dynamicTeamSize || 2);
-    const homeLineup = $$('[name="homeDynamicLineup"]:checked').map((input) => input.value);
-    const awayLineup = $$('[name="awayDynamicLineup"]:checked').map((input) => input.value);
-    if (homeLineup.length !== teamSize || awayLineup.length !== teamSize) throw new Error(`Selecione exatamente ${teamSize} jogadores em cada lado.`);
-    if (homeLineup.some((id) => awayLineup.includes(id))) throw new Error('O mesmo jogador não pode atuar pelos dois lados.');
-    match.homeLineup = homeLineup;
-    match.awayLineup = awayLineup;
-    if (match.mvpPlayerId && ![...homeLineup, ...awayLineup].includes(match.mvpPlayerId)) throw new Error('O MVP precisa estar em uma das equipes desta partida.');
+  if (lineups) {
+    match.homeLineup = lineups.home;
+    match.awayLineup = lineups.away;
   }
 
   updateLeagueChampion(tournament);
